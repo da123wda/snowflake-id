@@ -2,13 +2,19 @@ package id
 
 import "sync/atomic"
 
-const defaultLeaseSize = 64
+const (
+	defaultLeaseSize   = 64
+	leaseQueueSize     = IDsPerMillisecond / defaultLeaseSize
+	leaseSwitchRetries = 10
+)
 
 // lease 是绑定到单一毫秒时间戳的内部连续 ID 号段。
 type lease struct {
-	prefix int64
-	next   atomic.Int64
-	end    int64
+	generation uint64
+	err        error
+	prefix     int64
+	next       atomic.Int64
+	end        int64
 }
 
 func newLease(timestamp, machineID, start, end int64) *lease {

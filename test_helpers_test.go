@@ -1,24 +1,37 @@
 package id
 
 import (
+	"testing"
 	"time"
 
 	"github.com/lee-ext/go-extend/ext"
 )
 
 func mustNewMutexGenerator(machineID, unixMilliseconds int64) *MutexGenerator {
-	generator, err := newMutexGenerator(machineID, unixMilliseconds)
+	state, err := newIDState(machineID, unixMilliseconds)
 	if err != nil {
 		panic(err)
 	}
-	return generator
+	return &MutexGenerator{state: state}
 }
 
-func mustNewMutex(machineID int64) *MutexGenerator {
+func mustNewMutex(tb testing.TB, machineID int64) *MutexGenerator {
+	tb.Helper()
 	generator, err := NewMutex(machineID)
 	if err != nil {
 		panic(err)
 	}
+	tb.Cleanup(generator.Close)
+	return generator
+}
+
+func mustNewRunningMutexGenerator(tb testing.TB, machineID, unixMilliseconds int64) *MutexGenerator {
+	tb.Helper()
+	generator, err := newMutexGenerator(machineID, unixMilliseconds)
+	if err != nil {
+		panic(err)
+	}
+	tb.Cleanup(generator.Close)
 	return generator
 }
 

@@ -3,14 +3,28 @@ package id
 import (
 	"errors"
 	"math"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
 )
 
+func newBufferedBenchmarkGenerator() *MutexGenerator {
+	generator := &MutexGenerator{}
+	for generation := range uint64(leaseQueueSize) {
+		start := int64(generation) * defaultLeaseSize
+		segment := newLease(0, 1, start, start+defaultLeaseSize-1)
+		segment.generation = generation
+		generator.queue.slots[generation].value.Store(segment)
+		generator.queue.slots[generation].refilling.Store(true)
+	}
+	return generator
+}
+
 func BenchmarkMutexNextCachedHotPath(b *testing.B) {
 	generator := &MutexGenerator{}
-	generator.current.Store(newLease(0, 0, 0, math.MaxInt64-1))
+	segment := newLease(0, 0, 0, math.MaxInt64-1)
+	generator.queue.slots[0].value.Store(segment)
 	b.ReportAllocs()
 	for b.Loop() {
 		if _, err := generator.Next(); err != nil {
@@ -21,14 +35,20 @@ func BenchmarkMutexNextCachedHotPath(b *testing.B) {
 
 // Sustained benchmarks include the 4096 IDs/ms format limit.
 func BenchmarkMutexNextSustained(b *testing.B) {
-	generator := mustNewMutex(1)
+	generator := mustNewMutex(b, 1)
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if _, err := generator.Next(); err != nil {
-				b.Errorf("Next() error: %v", err)
-				return
+			for {
+				if _, err := generator.Next(); errors.Is(err, ErrLeaseUnavailable) {
+					runtime.Gosched()
+					continue
+				} else if err != nil {
+					b.Errorf("Next() error: %v", err)
+					return
+				}
+				break
 			}
 		}
 	})
@@ -36,12 +56,18 @@ func BenchmarkMutexNextSustained(b *testing.B) {
 
 const shortBenchmarkBatchSize = 1000
 
-// ShortBatch benchmarks reset state before the format limit can dominate the result.
-// Generator.Next returns a standard value/error tuple.
+// ShortBatch consumes prefilled ring slots before the format limit can dominate.
 func BenchmarkMutexNextShortBatch(b *testing.B) {
+	generator := newBufferedBenchmarkGenerator()
 	b.ReportAllocs()
+	b.ResetTimer()
 	for b.Loop() {
-		generator := mustNewMutex(1)
+		b.StopTimer()
+		generator.active.Store(0)
+		for generation := range uint64(leaseQueueSize) {
+			generator.queue.slots[generation].value.Load().next.Store(int64(generation) * defaultLeaseSize)
+		}
+		b.StartTimer()
 		for range shortBenchmarkBatchSize {
 			if _, err := generator.Next(); err != nil {
 				b.Fatal(err)
@@ -53,9 +79,11 @@ func BenchmarkMutexNextShortBatch(b *testing.B) {
 
 func TestNewMutexMachineIDBounds(t *testing.T) {
 	for _, machineID := range []int64{0, MaxMachineID} {
-		if _, err := NewMutex(machineID); err != nil {
+		generator, err := NewMutex(machineID)
+		if err != nil {
 			t.Fatalf("NewMutex(%d) returned error: %v", machineID, err)
 		}
+		generator.Close()
 	}
 
 	for _, machineID := range []int64{-1, MaxMachineID + 1} {
@@ -65,8 +93,27 @@ func TestNewMutexMachineIDBounds(t *testing.T) {
 	}
 }
 
+func TestMutexInitializesFullLeaseQueue(t *testing.T) {
+	generator := mustNewMutex(t, 1)
+	if leaseQueueSize != 64 {
+		t.Fatalf("lease queue size = %d, want 64", leaseQueueSize)
+	}
+	for generation := range uint64(leaseQueueSize) {
+		segment := generator.leaseSlot(generation).value.Load()
+		if segment == nil || segment.generation != generation || segment.err != nil {
+			t.Fatalf("slot %d was not initialized for its generation", generation)
+		}
+		if size := segment.end - segment.next.Load() + 1; size != defaultLeaseSize {
+			t.Fatalf("slot %d size = %d, want %d", generation, size, defaultLeaseSize)
+		}
+	}
+	if generator.state.sequence != sequenceMask {
+		t.Fatalf("initial queue reserved through sequence %d, want %d", generator.state.sequence, sequenceMask)
+	}
+}
+
 func TestMutexNextIsConcurrentAndUnique(t *testing.T) {
-	generator := mustNewMutex(1)
+	generator := mustNewMutex(t, 1)
 
 	const count = 10_000
 	ids := make(chan int64, count)
@@ -75,12 +122,19 @@ func TestMutexNextIsConcurrentAndUnique(t *testing.T) {
 	for range count {
 		go func() {
 			defer wg.Done()
-			value, err := generator.Next()
-			if err != nil {
-				t.Errorf("Next() error: %v", err)
+			for {
+				value, err := generator.Next()
+				if errors.Is(err, ErrLeaseUnavailable) {
+					runtime.Gosched()
+					continue
+				}
+				if err != nil {
+					t.Errorf("Next() error: %v", err)
+					return
+				}
+				ids <- value
 				return
 			}
-			ids <- value
 		}()
 	}
 	wg.Wait()
@@ -106,8 +160,8 @@ func TestMutexNextIsConcurrentAndUnique(t *testing.T) {
 	}
 }
 
-func TestMutexNextRenewsAfterDefaultLease(t *testing.T) {
-	generator := mustNewMutex(2)
+func TestMutexNextSwitchesToNextQueueSlot(t *testing.T) {
+	generator := mustNewMutex(t, 2)
 	seen := make(map[int64]struct{}, defaultLeaseSize+1)
 	for range defaultLeaseSize + 1 {
 		value, err := generator.Next()
@@ -115,16 +169,92 @@ func TestMutexNextRenewsAfterDefaultLease(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, exists := seen[value]; exists {
-			t.Fatalf("duplicate ID after renewal: %d", value)
+			t.Fatalf("duplicate ID after queue switch: %d", value)
 		}
 		seen[value] = struct{}{}
 	}
+	if generation := generator.active.Load(); generation != 1 {
+		t.Fatalf("active generation = %d, want 1", generation)
+	}
 }
 
-func TestMutexConcurrentExhaustionReplacesLeaseOnce(t *testing.T) {
-	generator := mustNewMutex(3)
-	exhausted := newLease(0, 3, 0, -1)
-	generator.current.Store(exhausted)
+func TestMutexActorRefillsEmptiedSlot(t *testing.T) {
+	generator := mustNewMutex(t, 3)
+	for range defaultLeaseSize + 1 {
+		if _, err := generator.Next(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		segment := generator.leaseSlot(leaseQueueSize).value.Load()
+		if segment != nil && segment.generation == leaseQueueSize && segment.err == nil &&
+			!generator.leaseSlot(leaseQueueSize).refilling.Load() {
+			return
+		}
+		runtime.Gosched()
+	}
+	t.Fatal("actor did not refill the emptied slot")
+}
+
+func TestMutexConsumersDoNotWaitForActorWhileQueueHasLeases(t *testing.T) {
+	generator := mustNewMutex(t, 3)
+	generator.mu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			generator.mu.Unlock()
+		}
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		for range IDsPerMillisecond {
+			if _, err := generator.Next(); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("consume prefilled queue: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("consumers waited for the blocked actor while the queue still had leases")
+	}
+	if _, err := generator.Next(); !errors.Is(err, ErrLeaseUnavailable) {
+		t.Fatalf("Next() after draining blocked queue error = %v, want ErrLeaseUnavailable", err)
+	}
+
+	generator.mu.Unlock()
+	locked = false
+}
+
+func TestMutexUnavailableQueueReturnsAfterTenRetries(t *testing.T) {
+	generator := &MutexGenerator{}
+	exhausted := newLease(0, 1, 0, -1)
+	generator.queue.slots[0].value.Store(exhausted)
+	generator.queue.slots[1].refilling.Store(true)
+
+	if _, err := generator.Next(); !errors.Is(err, ErrLeaseUnavailable) {
+		t.Fatalf("Next() error = %v, want ErrLeaseUnavailable", err)
+	}
+	if generation := generator.active.Load(); generation != 0 {
+		t.Fatalf("active generation = %d after unavailable queue, want 0", generation)
+	}
+}
+
+func TestMutexConcurrentExhaustionSwitchesOnce(t *testing.T) {
+	generator := mustNewMutex(t, 3)
+	for range defaultLeaseSize {
+		if _, err := generator.Next(); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	ids := make(chan int64, defaultLeaseSize)
 	var wg sync.WaitGroup
@@ -143,11 +273,8 @@ func TestMutexConcurrentExhaustionReplacesLeaseOnce(t *testing.T) {
 	wg.Wait()
 	close(ids)
 
-	if generator.current.Load() == exhausted {
-		t.Fatal("exhausted lease was not replaced")
-	}
-	if generator.state.sequence != defaultLeaseSize-1 {
-		t.Fatalf("reserved sequence = %d, want exactly one lease ending at %d", generator.state.sequence, defaultLeaseSize-1)
+	if generation := generator.active.Load(); generation != 1 {
+		t.Fatalf("active generation = %d, want one switch to generation 1", generation)
 	}
 	seen := make(map[int64]struct{}, defaultLeaseSize)
 	for value := range ids {
@@ -161,28 +288,84 @@ func TestMutexConcurrentExhaustionReplacesLeaseOnce(t *testing.T) {
 	}
 }
 
-func TestMutexFailedReplacementCanBeRetried(t *testing.T) {
-	generator := mustNewMutexGenerator(4, MaxTimestampMilliseconds)
-	exhausted := newLease(maxTimestamp, 4, 0, -1)
-	generator.current.Store(exhausted)
+func TestMutexActorFailureCanBeRetried(t *testing.T) {
+	generator := mustNewRunningMutexGenerator(t, 4, MaxTimestampMilliseconds)
+	for range IDsPerMillisecond {
+		if _, err := generator.Next(); err != nil {
+			t.Fatalf("consume initial queue: %v", err)
+		}
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		_, err := generator.Next()
+		if errors.Is(err, ErrInvalidTimestamp) {
+			break
+		}
+		if !errors.Is(err, ErrLeaseUnavailable) {
+			t.Fatalf("Next() error = %v, want ErrInvalidTimestamp or temporary unavailability", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("actor did not publish its refill error")
+		}
+		runtime.Gosched()
+	}
+	if generation := generator.active.Load(); generation != leaseQueueSize-1 {
+		t.Fatalf("active generation = %d, want %d", generation, leaseQueueSize-1)
+	}
 
-	if _, err := generator.Next(); !errors.Is(err, ErrInvalidTimestamp) {
-		t.Fatalf("Next() error = %v, want ErrInvalidTimestamp", err)
-	}
-	if generator.current.Load() != exhausted {
-		t.Fatal("failed replacement changed current lease")
-	}
-	if !generator.mu.TryLock() {
-		t.Fatal("failed replacement left mutex locked")
-	}
+	generator.mu.Lock()
 	generator.state.lastTimestamp = time.Now().UnixMilli() - EpochMilliseconds
 	generator.state.sequence = -1
 	generator.mu.Unlock()
 
-	if _, err := generator.Next(); err != nil {
-		t.Fatalf("Next() retry error: %v", err)
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := generator.Next(); err == nil {
+			if generation := generator.active.Load(); generation != leaseQueueSize {
+				t.Fatalf("active generation = %d, want %d", generation, leaseQueueSize)
+			}
+			return
+		} else if !errors.Is(err, ErrInvalidTimestamp) && !errors.Is(err, ErrLeaseUnavailable) {
+			t.Fatalf("Next() retry error: %v", err)
+		}
+		runtime.Gosched()
 	}
-	if generator.current.Load() == exhausted {
-		t.Fatal("successful retry did not replace current lease")
+	t.Fatal("actor did not recover after state was repaired")
+}
+
+func TestMutexCloseStopsGeneration(t *testing.T) {
+	generator := mustNewMutex(t, 5)
+	generator.Close()
+	if _, err := generator.Next(); !errors.Is(err, ErrGeneratorClosed) {
+		t.Fatalf("Next() after Close error = %v, want ErrGeneratorClosed", err)
+	}
+	if _, err := generator.NextBatch(); !errors.Is(err, ErrGeneratorClosed) {
+		t.Fatalf("NextBatch() after Close error = %v, want ErrGeneratorClosed", err)
+	}
+}
+
+func TestMutexCloseCanRaceWithQueueSwitch(t *testing.T) {
+	for range 100 {
+		generator, err := NewMutex(6)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range defaultLeaseSize {
+			if _, err := generator.Next(); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, _ = generator.Next()
+		}()
+		generator.Close()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("Next did not finish while Close raced with a queue switch")
+		}
 	}
 }

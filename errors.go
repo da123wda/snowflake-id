@@ -12,5 +12,11 @@ var (
 	// ErrInvalidID 表示无法解析给定的 ID。
 	ErrInvalidID = errors.New("id: invalid ID")
 
+	// ErrLeaseUnavailable 表示后台 Actor 尚未准备好下一个号段，调用方可以重试。
+	ErrLeaseUnavailable = errors.New("id: lease queue is temporarily unavailable")
+
+	// ErrGeneratorClosed 表示生成器已经关闭。
+	ErrGeneratorClosed = errors.New("id: generator is closed")
+
 	errInvalidSegmentSize = errors.New("id: segment size must be between 1 and 4096")
 )

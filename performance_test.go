@@ -1,6 +1,8 @@
 package id
 
 import (
+	"errors"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -8,13 +10,17 @@ import (
 const performanceTargetPerSecond = 50_000
 
 func TestMutexGenerates50000IDsPerSecond(t *testing.T) {
-	generator := mustNewMutex(1)
+	generator := mustNewMutex(t, 1)
 	startedAt := time.Now()
 
-	for range performanceTargetPerSecond {
-		if _, err := generator.Next(); err != nil {
+	for generated := 0; generated < performanceTargetPerSecond; {
+		if _, err := generator.Next(); errors.Is(err, ErrLeaseUnavailable) {
+			runtime.Gosched()
+			continue
+		} else if err != nil {
 			t.Fatalf("Mutex Next() error: %v", err)
 		}
+		generated++
 	}
 
 	elapsed := time.Since(startedAt)

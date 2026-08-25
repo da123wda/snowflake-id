@@ -26,7 +26,7 @@ func reserveBatchAt(generator *MutexGenerator, unixMilliseconds int64) (sequence
 
 func TestMutexNextBatchReturns64OrderedIDs(t *testing.T) {
 	const machineID = int64(7)
-	batch, err := mustNewMutex(machineID).NextBatch()
+	batch, err := mustNewMutex(t, machineID).NextBatch()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestMutexNextAndNextBatchAreConcurrentAndUnique(t *testing.T) {
 	const machineID = int64(9)
 	const batchCount = 64
 	const nextCount = 4096
-	generator := mustNewMutex(machineID)
+	generator := mustNewMutex(t, machineID)
 	ids := make(chan int64, batchCount*defaultLeaseSize+nextCount)
 	var wg sync.WaitGroup
 	wg.Add(batchCount + nextCount)
@@ -113,7 +113,7 @@ func TestMutexNextAndNextBatchAreConcurrentAndUnique(t *testing.T) {
 }
 
 func TestMutexNextBatchDoesNotOverlapCurrentLease(t *testing.T) {
-	generator := mustNewMutex(3)
+	generator := mustNewMutex(t, 3)
 	seen := make(map[int64]struct{}, 2*defaultLeaseSize)
 	add := func(value int64) {
 		if _, exists := seen[value]; exists {
@@ -197,7 +197,7 @@ func BenchmarkMutexNextBatchSingleCost(b *testing.B) {
 
 // ParallelSustained includes the single-machine 4096 IDs/ms format limit.
 func BenchmarkMutexNextBatchParallelSustained(b *testing.B) {
-	generator := mustNewMutex(1)
+	generator := mustNewMutex(b, 1)
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
