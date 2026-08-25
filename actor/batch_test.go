@@ -3,6 +3,7 @@ package actor
 import (
 	"errors"
 	"math"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -81,12 +82,19 @@ func TestActorNextAndNextBatchAreConcurrentAndUnique(t *testing.T) {
 	for range nextCount {
 		go func() {
 			defer wg.Done()
-			value, err := generator.Next()
-			if err != nil {
-				t.Errorf("Next() error: %v", err)
+			for {
+				value, err := generator.Next()
+				if errors.Is(err, ErrLeaseUnavailable) {
+					runtime.Gosched()
+					continue
+				}
+				if err != nil {
+					t.Errorf("Next() error: %v", err)
+					return
+				}
+				ids <- value
 				return
 			}
-			ids <- value
 		}()
 	}
 	wg.Wait()
@@ -155,24 +163,24 @@ func TestActorNextBatchMovesWholeBatchToNextMillisecond(t *testing.T) {
 }
 
 func TestActorNextBatchPropagatesClockRollback(t *testing.T) {
-	generator := mustNewActorGenerator(1, EpochMilliseconds+10)
-	if _, err := nextBatchAt(generator, EpochMilliseconds+9); !errors.Is(err, ErrInvalidTimestamp) {
+	generator := mustNewActorGenerator(1, testEpochMilliseconds+10)
+	if _, err := nextBatchAt(generator, testEpochMilliseconds+9); !errors.Is(err, ErrInvalidTimestamp) {
 		t.Fatalf("NextBatch error = %v, want ErrInvalidTimestamp", err)
 	}
 }
 
 func TestActorNextBatchSupportsAndExhaustsMaximumTimestamp(t *testing.T) {
-	generator := mustNewActorGenerator(MaxMachineID, MaxTimestampMilliseconds)
+	generator := mustNewActorGenerator(MaxMachineID, testMaxTimestampMilliseconds)
 	generator.state.sequence = sequenceMask - defaultLeaseSize
 
-	batch, err := nextBatchAt(generator, MaxTimestampMilliseconds)
+	batch, err := nextBatchAt(generator, testMaxTimestampMilliseconds)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if last := batch[len(batch)-1]; last != math.MaxInt64 {
 		t.Fatalf("last batch ID = %d, want %d", last, int64(math.MaxInt64))
 	}
-	if _, err := nextBatchAt(generator, MaxTimestampMilliseconds); !errors.Is(err, ErrInvalidTimestamp) {
+	if _, err := nextBatchAt(generator, testMaxTimestampMilliseconds); !errors.Is(err, ErrInvalidTimestamp) {
 		t.Fatalf("NextBatch after maximum timestamp exhaustion error = %v, want ErrInvalidTimestamp", err)
 	}
 }
@@ -180,7 +188,7 @@ func TestActorNextBatchSupportsAndExhaustsMaximumTimestamp(t *testing.T) {
 // SingleCost resets internal state with the timer stopped so it measures one batch
 // reservation and Vec construction without initialization or the sustained limit.
 func BenchmarkActorNextBatchSingleCost(b *testing.B) {
-	generator := mustNewActorGenerator(1, EpochMilliseconds+1)
+	generator := mustNewActorGenerator(1, testEpochMilliseconds+1)
 	b.ReportAllocs()
 	for b.Loop() {
 		b.StopTimer()

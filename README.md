@@ -8,7 +8,7 @@
 > [!IMPORTANT]
 > - 每个进程或生成器必须使用独占的 `machineID`；本项目不负责跨进程分配机器 ID。
 > - `machineID` 的有效范围是 `0`～`1023`，单个机器 ID 的格式上限是每毫秒 `4096` 个 ID。
-> - 系统时钟回拨会在预留新号段时返回 `ErrInvalidTimestamp`；当前已缓存的号段仍可能继续生成 ID。
+> - 构造和解析必须传入同一个自定义纪元 `time.Time`；系统时钟回拨会在预留新号段时返回 `ErrInvalidTimestamp`。
 > - Actor 版和 Mutex 版之间不会协调机器 ID；同时使用时也必须分配不同的 `machineID`。
 
 ## 项目介绍
@@ -18,12 +18,12 @@
 | 能力 | 取值 |
 | --- | --- |
 | ID 类型 | 非负 `int64` |
-| 自定义纪元 | `2025-01-01T00:00:00Z` |
+| 自定义纪元 | 由调用方传入 `time.Time`，按毫秒截断 |
 | 时间戳 | 41 位，毫秒精度 |
 | 机器 ID | 10 位，共 1024 个取值 |
 | 序列号 | 12 位，每毫秒 4096 个取值 |
 | 单机器格式上限 | 4,096,000 ID/秒 |
-| 最大支持时间 | `2094-09-07T15:47:35.551Z` |
+| 最大支持时间 | 自定义纪元之后约 69.7 年 |
 | 默认内部号段 | 64 个 ID |
 
 ID 的位布局如下：
@@ -39,7 +39,7 @@ ID 的位布局如下：
 编码公式：
 
 ```text
-ID = ((unixMilliseconds - EpochMilliseconds) << 22)
+ID = ((unixMilliseconds - epoch.UnixMilli()) << 22)
    | (machineID << 12)
    | sequence
 ```
@@ -75,9 +75,11 @@ import (
 )
 
 func main() {
+	epoch := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+
 	// 42 必须在所有同时运行的生成器中保持唯一。
-	// 第二个参数是可选的 Actor 邮箱容量，省略时默认 64。
-	generator, err := actorid.NewActor(42)
+	// Actor 邮箱容量由包内固定为 64。
+	generator, err := actorid.NewActor(42, epoch)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -87,7 +89,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	parsed, err := actorid.Parse(value)
+	parsed, err := actorid.Parse(value, epoch)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -146,7 +148,8 @@ func generateConcurrently(generator *actorid.ActorGenerator, consume func(int64)
 ```go
 import mutexid "github.com/da123wda/snowflake-id/mutex"
 
-generator, err := mutexid.NewMutex(43)
+epoch := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+generator, err := mutexid.NewMutex(43, epoch)
 value, err := generator.Next()
 ```
 
@@ -156,14 +159,13 @@ value, err := generator.Next()
 
 | API | 说明 |
 | --- | --- |
-| `NewActor(machineID, actorCapacity...)` | 创建唯一 Actor 的生成器；邮箱容量默认 64，显式值至少 64 |
+| `NewActor(machineID, epoch)` | 使用自定义纪元创建唯一 Actor 的生成器；邮箱容量固定 64 |
 | `(*ActorGenerator).Next()` | 从当前环形号段原子取号 |
 | `(*ActorGenerator).NextBatch()` | 返回 64 个严格递增且属于同一毫秒的 ID |
-| `Parse(value)` | 解析时间、机器 ID 和序列号 |
-| `EpochMilliseconds` | 自定义纪元的 Unix 毫秒值 |
+| `Parse(value, epoch)` | 使用生成时的自定义纪元解析时间、机器 ID 和序列号 |
 | `MaxMachineID` | 最大机器 ID，值为 `1023` |
 | `IDsPerMillisecond` | 每毫秒序列容量，值为 `4096` |
-| `MaxTimestampMilliseconds` | 格式支持的最大 Unix 毫秒时间 |
+| `MaxTimestampDeltaMilliseconds` | 纪元之后可编码的最大毫秒差 |
 
 可能返回的公开错误：
 
@@ -173,7 +175,6 @@ value, err := generator.Next()
 | `ErrInvalidTimestamp` | 当前时间早于纪元、发生回拨或超过最大时间 |
 | `ErrInvalidID` | `Parse` 收到负数 ID |
 | `ErrLeaseUnavailable` | 号段队列暂时断供，调用方可以重试 |
-| `ErrInvalidActorCapacity` | Actor 邮箱容量小于 64，或传入多个容量参数 |
 
 `ActorGenerator` 不提供关闭 Actor 的 API，适合作为服务进程内的长生命周期实例。一个生成器实例在构造时只创建一个 Actor，后续所有耗尽号段都提交给该 Actor 回填。
 

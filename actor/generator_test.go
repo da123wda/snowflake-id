@@ -77,9 +77,9 @@ func BenchmarkActorNextShortBatch(b *testing.B) {
 	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*shortBenchmarkBatchSize), "ns/id")
 }
 
-func TestNewActorMachineIDAndCapacityBounds(t *testing.T) {
+func TestNewActorValidatesMachineIDAndEpoch(t *testing.T) {
 	for _, machineID := range []int64{0, MaxMachineID} {
-		generator, err := NewActor(machineID)
+		generator, err := NewActor(machineID, testEpoch)
 		if err != nil {
 			t.Fatalf("NewActor(%d) returned error: %v", machineID, err)
 		}
@@ -87,19 +87,20 @@ func TestNewActorMachineIDAndCapacityBounds(t *testing.T) {
 	}
 
 	for _, machineID := range []int64{-1, MaxMachineID + 1} {
-		if _, err := NewActor(machineID); !errors.Is(err, ErrInvalidMachineID) {
+		if _, err := NewActor(machineID, testEpoch); !errors.Is(err, ErrInvalidMachineID) {
 			t.Fatalf("NewActor(%d) error = %v, want ErrInvalidMachineID", machineID, err)
 		}
 	}
-	for _, capacity := range []int{0, leaseQueueSize - 1} {
-		if _, err := NewActor(1, capacity); !errors.Is(err, ErrInvalidActorCapacity) {
-			t.Fatalf("NewActor(capacity=%d) error = %v, want ErrInvalidActorCapacity", capacity, err)
+
+	nowMilliseconds := time.Now().UnixMilli()
+	for _, epoch := range []time.Time{
+		time.UnixMilli(nowMilliseconds + int64(time.Hour/time.Millisecond)),
+		time.UnixMilli(nowMilliseconds - maxTimestamp - 1),
+	} {
+		if _, err := NewActor(1, epoch); !errors.Is(err, ErrInvalidTimestamp) {
+			t.Fatalf("NewActor(epoch=%v) error = %v, want ErrInvalidTimestamp", epoch, err)
 		}
 	}
-	if _, err := NewActor(1, leaseQueueSize, leaseQueueSize); !errors.Is(err, ErrInvalidActorCapacity) {
-		t.Fatalf("NewActor(two capacities) error = %v, want ErrInvalidActorCapacity", err)
-	}
-	mustNewActor(t, 1, 128)
 }
 
 func TestActorInitializesFullLeaseQueue(t *testing.T) {
@@ -298,7 +299,7 @@ func TestActorConcurrentExhaustionSwitchesOnce(t *testing.T) {
 }
 
 func TestActorFailureCanBeRetried(t *testing.T) {
-	generator := mustNewRunningActorGenerator(t, 4, MaxTimestampMilliseconds)
+	generator := mustNewRunningActorGenerator(t, 4, testMaxTimestampMilliseconds)
 	for range IDsPerMillisecond {
 		if _, err := generator.Next(); err != nil {
 			t.Fatalf("consume initial queue: %v", err)
@@ -323,7 +324,7 @@ func TestActorFailureCanBeRetried(t *testing.T) {
 	}
 
 	generator.mu.Lock()
-	generator.state.lastTimestamp = time.Now().UnixMilli() - EpochMilliseconds
+	generator.state.lastTimestamp = time.Now().UnixMilli() - testEpochMilliseconds
 	generator.state.sequence = -1
 	generator.mu.Unlock()
 

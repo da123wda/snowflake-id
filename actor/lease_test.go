@@ -10,7 +10,7 @@ import (
 
 func TestInternalLeaseReturnsContinuousIDs(t *testing.T) {
 	const machineID = int64(513)
-	milliseconds := EpochMilliseconds + 123
+	milliseconds := testEpochMilliseconds + 123
 	generator := mustNewActorGenerator(machineID, milliseconds)
 	segment, err := acquireMutexAtValue(generator, milliseconds, defaultLeaseSize)
 	if err != nil {
@@ -97,8 +97,8 @@ func TestInternalLeaseMovesToNextMillisecondWhenSequenceIsInsufficient(t *testin
 }
 
 func TestInternalLeaseSupportsMaximumTimestamp(t *testing.T) {
-	generator := mustNewActorGenerator(MaxMachineID, MaxTimestampMilliseconds)
-	segment, err := acquireMutexAtValue(generator, MaxTimestampMilliseconds, IDsPerMillisecond)
+	generator := mustNewActorGenerator(MaxMachineID, testMaxTimestampMilliseconds)
+	segment, err := acquireMutexAtValue(generator, testMaxTimestampMilliseconds, IDsPerMillisecond)
 	if err != nil {
 		t.Fatal(err)
 	}

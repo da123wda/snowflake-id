@@ -15,8 +15,5 @@ var (
 	// ErrLeaseUnavailable 表示后台 Actor 尚未准备好下一个号段，调用方可以重试。
 	ErrLeaseUnavailable = errors.New("snowflake-id/actor: lease queue is temporarily unavailable")
 
-	// ErrInvalidActorCapacity 表示 Actor 邮箱容量小于环形队列所需的 64。
-	ErrInvalidActorCapacity = errors.New("snowflake-id/actor: actor capacity must be at least 64")
-
 	errInvalidSegmentSize = errors.New("snowflake-id/actor: segment size must be between 1 and 4096")
 )

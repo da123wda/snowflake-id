@@ -8,7 +8,7 @@ import (
 )
 
 func TestStateLayoutAndOrder(t *testing.T) {
-	milliseconds := []int64{EpochMilliseconds + 12, EpochMilliseconds + 12, EpochMilliseconds + 12, EpochMilliseconds + 13}
+	milliseconds := []int64{testEpochMilliseconds + 12, testEpochMilliseconds + 12, testEpochMilliseconds + 12, testEpochMilliseconds + 13}
 	index := 0
 	generator := mustNewActorGenerator(513, milliseconds[index])
 	index++
@@ -36,9 +36,9 @@ func TestStateLayoutAndOrder(t *testing.T) {
 		millis   int64
 		sequence int64
 	}{
-		{first, EpochMilliseconds + 12, 0},
-		{second, EpochMilliseconds + 12, 1},
-		{third, EpochMilliseconds + 13, 0},
+		{first, testEpochMilliseconds + 12, 0},
+		{second, testEpochMilliseconds + 12, 1},
+		{third, testEpochMilliseconds + 13, 0},
 	} {
 		timestamp, machineID, sequence, err := parseValue(test.value)
 		if err != nil {
@@ -75,39 +75,39 @@ func TestStateWaitsWhenSequenceIsExhausted(t *testing.T) {
 }
 
 func TestStateDetectsClockRollback(t *testing.T) {
-	generator := mustNewActorGenerator(1, EpochMilliseconds+10)
-	if _, err := leaseIDAtValue(generator, EpochMilliseconds+10); err != nil {
+	generator := mustNewActorGenerator(1, testEpochMilliseconds+10)
+	if _, err := leaseIDAtValue(generator, testEpochMilliseconds+10); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := leaseIDAtValue(generator, EpochMilliseconds+9); !errors.Is(err, ErrInvalidTimestamp) {
+	if _, err := leaseIDAtValue(generator, testEpochMilliseconds+9); !errors.Is(err, ErrInvalidTimestamp) {
 		t.Fatalf("lease() error = %v, want ErrInvalidTimestamp", err)
 	}
 }
 
 func TestStateDetectsRollbackBeforeEpoch(t *testing.T) {
-	generator := mustNewActorGenerator(1, EpochMilliseconds+10)
-	if _, err := leaseIDAtValue(generator, EpochMilliseconds+10); err != nil {
+	generator := mustNewActorGenerator(1, testEpochMilliseconds+10)
+	if _, err := leaseIDAtValue(generator, testEpochMilliseconds+10); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := leaseIDAtValue(generator, EpochMilliseconds-1); !errors.Is(err, ErrInvalidTimestamp) {
+	if _, err := leaseIDAtValue(generator, testEpochMilliseconds-1); !errors.Is(err, ErrInvalidTimestamp) {
 		t.Fatalf("lease() error = %v, want ErrInvalidTimestamp", err)
 	}
 }
 
 func TestNewActorRejectsTimestampBeforeEpoch(t *testing.T) {
-	_, err := newActorGenerator(1, EpochMilliseconds-1, DefaultActorCapacity)
+	_, err := newActorGenerator(1, testEpochMilliseconds, testEpochMilliseconds-1)
 	if !errors.Is(err, ErrInvalidTimestamp) {
 		t.Fatalf("newActorGenerator() error = %v, want ErrInvalidTimestamp", err)
 	}
 }
 
 func TestStateSupportsMaximumTimestampWithoutSignBit(t *testing.T) {
-	generator := mustNewActorGenerator(MaxMachineID, MaxTimestampMilliseconds)
+	generator := mustNewActorGenerator(MaxMachineID, testMaxTimestampMilliseconds)
 
 	var last int64
 	var err error
 	for range IDsPerMillisecond {
-		last, err = leaseIDAtValue(generator, MaxTimestampMilliseconds)
+		last, err = leaseIDAtValue(generator, testMaxTimestampMilliseconds)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -123,13 +123,13 @@ func TestStateSupportsMaximumTimestampWithoutSignBit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if timestamp.UnixMilli() != MaxTimestampMilliseconds || machineID != MaxMachineID || sequence != sequenceMask {
-		t.Fatalf("Parse(%d) = (%d, %d, %d), want (%d, %d, %d)", last, timestamp.UnixMilli(), machineID, sequence, MaxTimestampMilliseconds, MaxMachineID, sequenceMask)
+	if timestamp.UnixMilli() != testMaxTimestampMilliseconds || machineID != MaxMachineID || sequence != sequenceMask {
+		t.Fatalf("Parse(%d) = (%d, %d, %d), want (%d, %d, %d)", last, timestamp.UnixMilli(), machineID, sequence, testMaxTimestampMilliseconds, MaxMachineID, sequenceMask)
 	}
 }
 
 func TestNewActorRejectsTimestampAfterMaximum(t *testing.T) {
-	_, err := newActorGenerator(1, MaxTimestampMilliseconds+1, DefaultActorCapacity)
+	_, err := newActorGenerator(1, testEpochMilliseconds, testMaxTimestampMilliseconds+1)
 	if !errors.Is(err, ErrInvalidTimestamp) {
 		t.Fatalf("newActorGenerator() error = %v, want ErrInvalidTimestamp", err)
 	}

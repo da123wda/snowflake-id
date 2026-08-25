@@ -15,14 +15,14 @@ type MutexGenerator struct {
 	current atomic.Pointer[lease]
 }
 
-// NewMutex 创建独立的互斥锁生成器。
+// NewMutex 使用自定义纪元创建独立的互斥锁生成器。
 // 同一个 machineID 在所有进程和生成器中必须保持独占。
-func NewMutex(machineID int64) (*MutexGenerator, error) {
-	return newMutexGenerator(machineID, time.Now().UnixMilli())
+func NewMutex(machineID int64, epoch time.Time) (*MutexGenerator, error) {
+	return newMutexGenerator(machineID, epoch.UnixMilli(), time.Now().UnixMilli())
 }
 
-func newMutexGenerator(machineID, initialUnixMilliseconds int64) (*MutexGenerator, error) {
-	state, err := newIDState(machineID, initialUnixMilliseconds)
+func newMutexGenerator(machineID, epochMilliseconds, initialUnixMilliseconds int64) (*MutexGenerator, error) {
+	state, err := newIDState(machineID, epochMilliseconds, initialUnixMilliseconds)
 	if err != nil {
 		return nil, err
 	}

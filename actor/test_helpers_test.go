@@ -7,17 +7,24 @@ import (
 	"github.com/lee-ext/go-extend/ext"
 )
 
+const (
+	testEpochMilliseconds        int64 = 1_735_689_600_000
+	testMaxTimestampMilliseconds       = testEpochMilliseconds + maxTimestamp
+)
+
+var testEpoch = time.UnixMilli(testEpochMilliseconds)
+
 func mustNewActorGenerator(machineID, unixMilliseconds int64) *ActorGenerator {
-	state, err := newIDState(machineID, unixMilliseconds)
+	state, err := newIDState(machineID, testEpochMilliseconds, unixMilliseconds)
 	if err != nil {
 		panic(err)
 	}
 	return &ActorGenerator{state: state}
 }
 
-func mustNewActor(tb testing.TB, machineID int64, actorCapacity ...int) *ActorGenerator {
+func mustNewActor(tb testing.TB, machineID int64) *ActorGenerator {
 	tb.Helper()
-	generator, err := NewActor(machineID, actorCapacity...)
+	generator, err := NewActor(machineID, testEpoch)
 	if err != nil {
 		panic(err)
 	}
@@ -27,7 +34,7 @@ func mustNewActor(tb testing.TB, machineID int64, actorCapacity ...int) *ActorGe
 
 func mustNewRunningActorGenerator(tb testing.TB, machineID, unixMilliseconds int64) *ActorGenerator {
 	tb.Helper()
-	generator, err := newActorGenerator(machineID, unixMilliseconds, DefaultActorCapacity)
+	generator, err := newActorGenerator(machineID, testEpochMilliseconds, unixMilliseconds)
 	if err != nil {
 		panic(err)
 	}
@@ -67,7 +74,7 @@ func leaseIDAtValue(generator *ActorGenerator, unixMilliseconds int64) (int64, e
 }
 
 func parseValue(value int64) (time.Time, int64, int64, error) {
-	parsed, err := Parse(value)
+	parsed, err := Parse(value, testEpoch)
 	if err != nil {
 		return time.Time{}, 0, 0, err
 	}

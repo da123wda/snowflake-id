@@ -4,23 +4,35 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 )
+
+var testEpoch = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
 func TestNewMutexValidatesMachineID(t *testing.T) {
 	for _, machineID := range []int64{0, MaxMachineID} {
-		if _, err := NewMutex(machineID); err != nil {
+		if _, err := NewMutex(machineID, testEpoch); err != nil {
 			t.Fatalf("NewMutex(%d): %v", machineID, err)
 		}
 	}
 	for _, machineID := range []int64{-1, MaxMachineID + 1} {
-		if _, err := NewMutex(machineID); !errors.Is(err, ErrInvalidMachineID) {
+		if _, err := NewMutex(machineID, testEpoch); !errors.Is(err, ErrInvalidMachineID) {
 			t.Fatalf("NewMutex(%d) error = %v, want ErrInvalidMachineID", machineID, err)
+		}
+	}
+	nowMilliseconds := time.Now().UnixMilli()
+	for _, epoch := range []time.Time{
+		time.UnixMilli(nowMilliseconds + int64(time.Hour/time.Millisecond)),
+		time.UnixMilli(nowMilliseconds - maxTimestamp - 1),
+	} {
+		if _, err := NewMutex(1, epoch); !errors.Is(err, ErrInvalidTimestamp) {
+			t.Fatalf("NewMutex(epoch=%v) error = %v, want ErrInvalidTimestamp", epoch, err)
 		}
 	}
 }
 
 func TestMutexNextRenewsAfter64IDs(t *testing.T) {
-	generator, err := NewMutex(1)
+	generator, err := NewMutex(1, testEpoch)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +50,7 @@ func TestMutexNextRenewsAfter64IDs(t *testing.T) {
 }
 
 func TestMutexNextIsConcurrentAndUnique(t *testing.T) {
-	generator, err := NewMutex(2)
+	generator, err := NewMutex(2, testEpoch)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +77,7 @@ func TestMutexNextIsConcurrentAndUnique(t *testing.T) {
 			t.Fatalf("duplicate ID: %d", value)
 		}
 		seen[value] = struct{}{}
-		parsed, err := Parse(value)
+		parsed, err := Parse(value, testEpoch)
 		if err != nil || parsed.V1 != 2 {
 			t.Fatalf("Parse(%d) = (%v, %d), error %v", value, parsed.V0, parsed.V1, err)
 		}
@@ -76,7 +88,7 @@ func TestMutexNextIsConcurrentAndUnique(t *testing.T) {
 }
 
 func TestMutexNextAndNextBatchDoNotOverlap(t *testing.T) {
-	generator, err := NewMutex(3)
+	generator, err := NewMutex(3, testEpoch)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,5 +117,15 @@ func TestMutexNextAndNextBatchDoNotOverlap(t *testing.T) {
 			t.Fatalf("duplicate Next ID: %d", value)
 		}
 		seen[value] = struct{}{}
+	}
+}
+
+func TestMutexParseUsesCustomEpoch(t *testing.T) {
+	parsed, err := Parse(0, testEpoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !parsed.V0.Equal(testEpoch) || parsed.V1 != 0 || parsed.V2 != 0 {
+		t.Fatalf("Parse(0) = (%v, %d, %d), want (%v, 0, 0)", parsed.V0, parsed.V1, parsed.V2, testEpoch)
 	}
 }

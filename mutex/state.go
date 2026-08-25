@@ -8,20 +8,21 @@ import (
 const leaseWaitSpinWindow = 200 * time.Microsecond
 
 type idState struct {
-	machineID     int64
-	lastTimestamp int64
-	sequence      int64
+	epochMilliseconds int64
+	machineID         int64
+	lastTimestamp     int64
+	sequence          int64
 }
 
-func newIDState(machineID, initialUnixMilliseconds int64) (*idState, error) {
+func newIDState(machineID, epochMilliseconds, initialUnixMilliseconds int64) (*idState, error) {
 	if machineID < 0 || machineID > MaxMachineID {
 		return nil, ErrInvalidMachineID
 	}
-	initialTimestamp := initialUnixMilliseconds - EpochMilliseconds
-	if initialTimestamp < 0 || initialTimestamp > maxTimestamp {
+	if epochMilliseconds > initialUnixMilliseconds || epochMilliseconds < initialUnixMilliseconds-maxTimestamp {
 		return nil, ErrInvalidTimestamp
 	}
-	return &idState{machineID: machineID, lastTimestamp: initialTimestamp, sequence: -1}, nil
+	initialTimestamp := initialUnixMilliseconds - epochMilliseconds
+	return &idState{epochMilliseconds: epochMilliseconds, machineID: machineID, lastTimestamp: initialTimestamp, sequence: -1}, nil
 }
 
 type sequenceRange struct {
@@ -42,7 +43,7 @@ func (s *idState) lease(unixMilliseconds int64, size int) (*lease, error) {
 }
 
 func (s *idState) reserve(unixMilliseconds, size int64) (sequenceRange, error) {
-	timestamp := unixMilliseconds - EpochMilliseconds
+	timestamp := unixMilliseconds - s.epochMilliseconds
 	if timestamp < s.lastTimestamp || timestamp > maxTimestamp {
 		return sequenceRange{}, ErrInvalidTimestamp
 	}
@@ -51,7 +52,7 @@ func (s *idState) reserve(unixMilliseconds, size int64) (sequenceRange, error) {
 		start = s.sequence + 1
 		if start+size-1 > sequenceMask {
 			var err error
-			timestamp, err = waitUntilNextMillisecond(s.lastTimestamp)
+			timestamp, err = waitUntilNextMillisecond(s.epochMilliseconds, s.lastTimestamp)
 			if err != nil {
 				return sequenceRange{}, err
 			}
@@ -67,11 +68,11 @@ func (s *idState) reserve(unixMilliseconds, size int64) (sequenceRange, error) {
 	return sequenceRange{timestamp: timestamp, start: start, end: end}, nil
 }
 
-func waitUntilNextMillisecond(lastTimestamp int64) (int64, error) {
-	target := time.UnixMilli(EpochMilliseconds + lastTimestamp + 1)
+func waitUntilNextMillisecond(epochMilliseconds, lastTimestamp int64) (int64, error) {
+	target := time.UnixMilli(epochMilliseconds + lastTimestamp + 1)
 	for {
 		now := time.Now()
-		timestamp := now.UnixMilli() - EpochMilliseconds
+		timestamp := now.UnixMilli() - epochMilliseconds
 		if timestamp < lastTimestamp {
 			return 0, ErrInvalidTimestamp
 		}

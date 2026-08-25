@@ -19,32 +19,17 @@ type ActorGenerator struct {
 	refillActor ext.Actor
 }
 
-// DefaultActorCapacity 是 Actor 邮箱的默认容量。
-const DefaultActorCapacity = 64
+const actorCapacity = 64
 
-// NewActor 创建 ActorGenerator。actorCapacity 省略时默认为 64，显式值不能小于 64。
+// NewActor 使用自定义纪元创建 ActorGenerator。Actor 邮箱容量固定为 64。
 // 同一个 machineID 在同一时刻只能分配给一个生成器。
-func NewActor(machineID int64, actorCapacity ...int) (*ActorGenerator, error) {
-	capacity, err := resolveActorCapacity(actorCapacity)
-	if err != nil {
-		return nil, err
-	}
-	return newActorGenerator(machineID, time.Now().UnixMilli(), capacity)
-}
-
-func resolveActorCapacity(capacities []int) (int, error) {
-	if len(capacities) == 0 {
-		return DefaultActorCapacity, nil
-	}
-	if len(capacities) != 1 || capacities[0] < leaseQueueSize {
-		return 0, ErrInvalidActorCapacity
-	}
-	return capacities[0], nil
+func NewActor(machineID int64, epoch time.Time) (*ActorGenerator, error) {
+	return newActorGenerator(machineID, epoch.UnixMilli(), time.Now().UnixMilli())
 }
 
 // newActorGenerator 使用指定的初始 Unix 毫秒时间戳创建 ActorGenerator。
-func newActorGenerator(machineID, initialUnixMilliseconds int64, actorCapacity int) (*ActorGenerator, error) {
-	state, err := newIDState(machineID, initialUnixMilliseconds)
+func newActorGenerator(machineID, epochMilliseconds, initialUnixMilliseconds int64) (*ActorGenerator, error) {
+	state, err := newIDState(machineID, epochMilliseconds, initialUnixMilliseconds)
 	if err != nil {
 		return nil, err
 	}

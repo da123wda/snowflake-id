@@ -9,26 +9,28 @@ const leaseWaitSpinWindow = 200 * time.Microsecond
 
 // idState 保存一个生成器独占的机器 ID、时间戳和序列号状态。
 type idState struct {
-	machineID     int64
-	lastTimestamp int64
-	sequence      int64
+	epochMilliseconds int64
+	machineID         int64
+	lastTimestamp     int64
+	sequence          int64
 }
 
 // newIDState 使用指定的初始 Unix 毫秒时间戳创建生成状态。
-func newIDState(machineID, initialUnixMilliseconds int64) (*idState, error) {
+func newIDState(machineID, epochMilliseconds, initialUnixMilliseconds int64) (*idState, error) {
 	if machineID < 0 || machineID > MaxMachineID {
 		return nil, ErrInvalidMachineID
 	}
 
-	initialTimestamp := initialUnixMilliseconds - EpochMilliseconds
-	if initialTimestamp < 0 || initialTimestamp > maxTimestamp {
+	if epochMilliseconds > initialUnixMilliseconds || epochMilliseconds < initialUnixMilliseconds-maxTimestamp {
 		return nil, ErrInvalidTimestamp
 	}
+	initialTimestamp := initialUnixMilliseconds - epochMilliseconds
 
 	return &idState{
-		machineID:     machineID,
-		lastTimestamp: initialTimestamp,
-		sequence:      -1,
+		epochMilliseconds: epochMilliseconds,
+		machineID:         machineID,
+		lastTimestamp:     initialTimestamp,
+		sequence:          -1,
 	}, nil
 }
 
@@ -54,7 +56,7 @@ func (s *idState) lease(unixMilliseconds int64, size int) (*lease, error) {
 
 // reserve 预留绑定到单一毫秒时间戳的连续序列号。
 func (s *idState) reserve(unixMilliseconds, size int64) (sequenceRange, error) {
-	timestamp := unixMilliseconds - EpochMilliseconds
+	timestamp := unixMilliseconds - s.epochMilliseconds
 	if timestamp < s.lastTimestamp || timestamp > maxTimestamp {
 		return sequenceRange{}, ErrInvalidTimestamp
 	}
@@ -64,7 +66,7 @@ func (s *idState) reserve(unixMilliseconds, size int64) (sequenceRange, error) {
 		start = s.sequence + 1
 		if start+size-1 > sequenceMask {
 			var err error
-			timestamp, err = waitUntilNextMillisecond(s.lastTimestamp)
+			timestamp, err = waitUntilNextMillisecond(s.epochMilliseconds, s.lastTimestamp)
 			if err != nil {
 				return sequenceRange{}, err
 			}
@@ -82,11 +84,11 @@ func (s *idState) reserve(unixMilliseconds, size int64) (sequenceRange, error) {
 }
 
 // waitUntilNextMillisecond 在距离下一毫秒较远时休眠，接近边界时让出调度权。
-func waitUntilNextMillisecond(lastTimestamp int64) (int64, error) {
-	target := time.UnixMilli(EpochMilliseconds + lastTimestamp + 1)
+func waitUntilNextMillisecond(epochMilliseconds, lastTimestamp int64) (int64, error) {
+	target := time.UnixMilli(epochMilliseconds + lastTimestamp + 1)
 	for {
 		now := time.Now()
-		timestamp := now.UnixMilli() - EpochMilliseconds
+		timestamp := now.UnixMilli() - epochMilliseconds
 		if timestamp < lastTimestamp {
 			return 0, ErrInvalidTimestamp
 		}
