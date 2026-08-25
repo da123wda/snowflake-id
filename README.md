@@ -2,7 +2,7 @@
 
 `snowflake-id` 提供两个完全隔离的 64 位 ID 生成包，使用“时间戳 + 机器 ID + 序列号”生成非负、可解析的 `int64` ID：
 
-- 根包：固定 64 槽环形队列，每个生成器只有一个 `ext.Actor` 异步回填；
+- `actor` 子包：固定 64 槽环形队列，每个生成器只有一个 `ext.Actor` 异步回填；
 - `mutex` 子包：保留原始实现，当前号段耗尽时使用互斥锁同步续租。
 
 > [!IMPORTANT]
@@ -58,7 +58,7 @@ ID = ((unixMilliseconds - EpochMilliseconds) << 22)
 安装：
 
 ```bash
-go get github.com/da123wda/snowflake-id
+go get github.com/da123wda/snowflake-id/actor
 ```
 
 下面的示例演示单个 ID、解析和批量生成：
@@ -71,13 +71,13 @@ import (
 	"log"
 	"time"
 
-	idgen "github.com/da123wda/snowflake-id"
+	actorid "github.com/da123wda/snowflake-id/actor"
 )
 
 func main() {
 	// 42 必须在所有同时运行的生成器中保持唯一。
 	// 第二个参数是可选的 Actor 邮箱容量，省略时默认 64。
-	generator, err := idgen.NewActor(42)
+	generator, err := actorid.NewActor(42)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	parsed, err := idgen.Parse(value)
+	parsed, err := actorid.Parse(value)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func main() {
 一个 `ActorGenerator` 可以被多个 goroutine 共享。在前一个示例中增加 `sync` import 后，可以加入以下函数：
 
 ```go
-func generateConcurrently(generator *idgen.ActorGenerator, consume func(int64)) {
+func generateConcurrently(generator *actorid.ActorGenerator, consume func(int64)) {
 	var wg sync.WaitGroup
 	for range 100 {
 		wg.Go(func() {
@@ -150,7 +150,7 @@ generator, err := mutexid.NewMutex(43)
 value, err := generator.Next()
 ```
 
-`mutex` 是独立包，不会创建 Actor，也不会引用根包的状态机。其 `Next` 热路径同样使用原子 CAS，仅在当前 64-ID 号段耗尽时加锁续租。
+`actor` 与 `mutex` 是两个完全独立的包。`mutex.Next` 热路径同样使用原子 CAS，仅在当前 64-ID 号段耗尽时加锁续租。
 
 ## 公开 API
 
@@ -185,13 +185,12 @@ value, err := generator.Next()
 
 | 文件 | 职责 |
 | --- | --- |
-| `layout.go` | 定义纪元、位宽、掩码和偏移量 |
-| `state.go` | 校验时间并预留连续序列号范围 |
-| `lease.go` | 保存 64 个 ID 的内部号段，通过原子 CAS 并发取号 |
-| `lease_queue.go` | 固定 64 槽环形队列、无锁切换和 Actor 回填 |
-| `actor_generator.go` | Actor 生成器初始化、唯一 Actor 和批量生成 |
-| `parse.go` | 使用位移和掩码解析 ID |
-| `errors.go` | 定义公开错误 |
+| `actor/layout.go` | Actor 包的纪元、位宽、掩码和偏移量 |
+| `actor/state.go` | Actor 包校验时间并预留连续序列号范围 |
+| `actor/lease.go` | 保存 64 个 ID 的内部号段，通过原子 CAS 并发取号 |
+| `actor/lease_queue.go` | 固定 64 槽环形队列、无锁切换和 Actor 回填 |
+| `actor/generator.go` | Actor 生成器初始化、唯一 Actor 和批量生成 |
+| `actor/parse.go` | Actor 包解析 ID |
 | `mutex/` | 完全独立的原始互斥锁续租包 |
 
 ### `Next` 生成流程

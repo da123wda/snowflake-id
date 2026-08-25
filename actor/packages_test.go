@@ -1,14 +1,14 @@
-package id_test
+package actor_test
 
 import (
 	"testing"
 
-	id "github.com/da123wda/snowflake-id"
+	actorid "github.com/da123wda/snowflake-id/actor"
 	mutexid "github.com/da123wda/snowflake-id/mutex"
 )
 
 func TestActorAndMutexPackagesAreIndependentlyUsable(t *testing.T) {
-	actorGenerator, err := id.NewActor(10)
+	actorGenerator, err := actorid.NewActor(10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +29,7 @@ func TestActorAndMutexPackagesAreIndependentlyUsable(t *testing.T) {
 		t.Fatalf("independent packages returned the same ID: %d", actorID)
 	}
 
-	actorParsed, err := id.Parse(actorID)
+	actorParsed, err := actorid.Parse(actorID)
 	if err != nil || actorParsed.V1 != 10 {
 		t.Fatalf("actor Parse machine ID = %d, error %v", actorParsed.V1, err)
 	}

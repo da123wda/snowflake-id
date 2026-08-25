@@ -1,4 +1,4 @@
-package id
+package actor
 
 const (
 	// EpochMilliseconds 是自定义纪元：2025-01-01T00:00:00Z。
