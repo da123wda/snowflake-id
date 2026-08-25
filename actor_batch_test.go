@@ -10,7 +10,7 @@ import (
 	"github.com/lee-ext/go-extend/ext"
 )
 
-func nextBatchAt(generator *MutexGenerator, unixMilliseconds int64) (ext.Vec[int64], error) {
+func nextBatchAt(generator *ActorGenerator, unixMilliseconds int64) (ext.Vec[int64], error) {
 	reserved, err := reserveBatchAt(generator, unixMilliseconds)
 	if err != nil {
 		return nil, err
@@ -18,15 +18,15 @@ func nextBatchAt(generator *MutexGenerator, unixMilliseconds int64) (ext.Vec[int
 	return batchValues(reserved, generator.state.machineID), nil
 }
 
-func reserveBatchAt(generator *MutexGenerator, unixMilliseconds int64) (sequenceRange, error) {
+func reserveBatchAt(generator *ActorGenerator, unixMilliseconds int64) (sequenceRange, error) {
 	generator.mu.Lock()
 	defer generator.mu.Unlock()
 	return generator.state.reserve(unixMilliseconds, defaultLeaseSize)
 }
 
-func TestMutexNextBatchReturns64OrderedIDs(t *testing.T) {
+func TestActorNextBatchReturns64OrderedIDs(t *testing.T) {
 	const machineID = int64(7)
-	batch, err := mustNewMutex(t, machineID).NextBatch()
+	batch, err := mustNewActor(t, machineID).NextBatch()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,11 +52,11 @@ func TestMutexNextBatchReturns64OrderedIDs(t *testing.T) {
 	}
 }
 
-func TestMutexNextAndNextBatchAreConcurrentAndUnique(t *testing.T) {
+func TestActorNextAndNextBatchAreConcurrentAndUnique(t *testing.T) {
 	const machineID = int64(9)
 	const batchCount = 64
 	const nextCount = 4096
-	generator := mustNewMutex(t, machineID)
+	generator := mustNewActor(t, machineID)
 	ids := make(chan int64, batchCount*defaultLeaseSize+nextCount)
 	var wg sync.WaitGroup
 	wg.Add(batchCount + nextCount)
@@ -112,8 +112,8 @@ func TestMutexNextAndNextBatchAreConcurrentAndUnique(t *testing.T) {
 	}
 }
 
-func TestMutexNextBatchDoesNotOverlapCurrentLease(t *testing.T) {
-	generator := mustNewMutex(t, 3)
+func TestActorNextBatchDoesNotOverlapCurrentLease(t *testing.T) {
+	generator := mustNewActor(t, 3)
 	seen := make(map[int64]struct{}, 2*defaultLeaseSize)
 	add := func(value int64) {
 		if _, exists := seen[value]; exists {
@@ -134,9 +134,9 @@ func TestMutexNextBatchDoesNotOverlapCurrentLease(t *testing.T) {
 	}
 }
 
-func TestMutexNextBatchMovesWholeBatchToNextMillisecond(t *testing.T) {
+func TestActorNextBatchMovesWholeBatchToNextMillisecond(t *testing.T) {
 	initialMilliseconds := time.Now().UnixMilli()
-	generator := mustNewMutexGenerator(1, initialMilliseconds)
+	generator := mustNewActorGenerator(1, initialMilliseconds)
 	generator.state.sequence = sequenceMask - 32
 
 	batch, err := nextBatchAt(generator, initialMilliseconds)
@@ -154,15 +154,15 @@ func TestMutexNextBatchMovesWholeBatchToNextMillisecond(t *testing.T) {
 	}
 }
 
-func TestMutexNextBatchPropagatesClockRollback(t *testing.T) {
-	generator := mustNewMutexGenerator(1, EpochMilliseconds+10)
+func TestActorNextBatchPropagatesClockRollback(t *testing.T) {
+	generator := mustNewActorGenerator(1, EpochMilliseconds+10)
 	if _, err := nextBatchAt(generator, EpochMilliseconds+9); !errors.Is(err, ErrInvalidTimestamp) {
 		t.Fatalf("NextBatch error = %v, want ErrInvalidTimestamp", err)
 	}
 }
 
-func TestMutexNextBatchSupportsAndExhaustsMaximumTimestamp(t *testing.T) {
-	generator := mustNewMutexGenerator(MaxMachineID, MaxTimestampMilliseconds)
+func TestActorNextBatchSupportsAndExhaustsMaximumTimestamp(t *testing.T) {
+	generator := mustNewActorGenerator(MaxMachineID, MaxTimestampMilliseconds)
 	generator.state.sequence = sequenceMask - defaultLeaseSize
 
 	batch, err := nextBatchAt(generator, MaxTimestampMilliseconds)
@@ -179,8 +179,8 @@ func TestMutexNextBatchSupportsAndExhaustsMaximumTimestamp(t *testing.T) {
 
 // SingleCost resets internal state with the timer stopped so it measures one batch
 // reservation and Vec construction without initialization or the sustained limit.
-func BenchmarkMutexNextBatchSingleCost(b *testing.B) {
-	generator := mustNewMutexGenerator(1, EpochMilliseconds+1)
+func BenchmarkActorNextBatchSingleCost(b *testing.B) {
+	generator := mustNewActorGenerator(1, EpochMilliseconds+1)
 	b.ReportAllocs()
 	for b.Loop() {
 		b.StopTimer()
@@ -196,8 +196,8 @@ func BenchmarkMutexNextBatchSingleCost(b *testing.B) {
 }
 
 // ParallelSustained includes the single-machine 4096 IDs/ms format limit.
-func BenchmarkMutexNextBatchParallelSustained(b *testing.B) {
-	generator := mustNewMutex(b, 1)
+func BenchmarkActorNextBatchParallelSustained(b *testing.B) {
+	generator := mustNewActor(b, 1)
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {

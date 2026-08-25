@@ -11,7 +11,7 @@ import (
 func TestInternalLeaseReturnsContinuousIDs(t *testing.T) {
 	const machineID = int64(513)
 	milliseconds := EpochMilliseconds + 123
-	generator := mustNewMutexGenerator(machineID, milliseconds)
+	generator := mustNewActorGenerator(machineID, milliseconds)
 	segment, err := acquireMutexAtValue(generator, milliseconds, defaultLeaseSize)
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +64,7 @@ func TestInternalLeaseCanBeConsumedConcurrently(t *testing.T) {
 }
 
 func TestInternalLeaseValidatesSize(t *testing.T) {
-	generator := mustNewMutexGenerator(1, time.Now().UnixMilli())
+	generator := mustNewActorGenerator(1, time.Now().UnixMilli())
 	for _, size := range []int{0, -1, IDsPerMillisecond + 1} {
 		if _, err := acquireMutexAtValue(generator, time.Now().UnixMilli(), size); !errors.Is(err, errInvalidSegmentSize) {
 			t.Fatalf("lease(size=%d) error = %v, want errInvalidSegmentSize", size, err)
@@ -74,7 +74,7 @@ func TestInternalLeaseValidatesSize(t *testing.T) {
 
 func TestInternalLeaseMovesToNextMillisecondWhenSequenceIsInsufficient(t *testing.T) {
 	initialMilliseconds := time.Now().UnixMilli()
-	generator := mustNewMutexGenerator(1, initialMilliseconds)
+	generator := mustNewActorGenerator(1, initialMilliseconds)
 	if _, err := acquireMutexAtValue(generator, initialMilliseconds, IDsPerMillisecond-10); err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestInternalLeaseMovesToNextMillisecondWhenSequenceIsInsufficient(t *testin
 }
 
 func TestInternalLeaseSupportsMaximumTimestamp(t *testing.T) {
-	generator := mustNewMutexGenerator(MaxMachineID, MaxTimestampMilliseconds)
+	generator := mustNewActorGenerator(MaxMachineID, MaxTimestampMilliseconds)
 	segment, err := acquireMutexAtValue(generator, MaxTimestampMilliseconds, IDsPerMillisecond)
 	if err != nil {
 		t.Fatal(err)

@@ -16,25 +16,19 @@ type leaseQueue struct {
 	slots [leaseQueueSize]leaseSlot
 }
 
-func (g *MutexGenerator) leaseSlot(generation uint64) *leaseSlot {
+func (g *ActorGenerator) leaseSlot(generation uint64) *leaseSlot {
 	return &g.queue.slots[generation%leaseQueueSize]
 }
 
-func (g *MutexGenerator) requestRefill(slot *leaseSlot, generation uint64) {
-	if g.closed.Load() || !slot.refilling.CompareAndSwap(false, true) {
-		return
-	}
-	g.actorLaunches.Add(1)
-	defer g.actorLaunches.Add(-1)
-	if g.closed.Load() {
-		slot.refilling.Store(false)
+func (g *ActorGenerator) requestRefill(slot *leaseSlot, generation uint64) {
+	if !slot.refilling.CompareAndSwap(false, true) {
 		return
 	}
 	slot.refillGeneration.Store(generation)
 	g.refillActor.Launch(slot.refill)
 }
 
-func (g *MutexGenerator) fillLeaseSlot(slot *leaseSlot) {
+func (g *ActorGenerator) fillLeaseSlot(slot *leaseSlot) {
 	defer slot.refilling.Store(false)
 	generation := slot.refillGeneration.Load()
 	segment, err := g.reserveLease()
@@ -46,13 +40,10 @@ func (g *MutexGenerator) fillLeaseSlot(slot *leaseSlot) {
 	slot.value.Store(segment)
 }
 
-func (g *MutexGenerator) advanceLease(generation uint64) error {
+func (g *ActorGenerator) advanceLease(generation uint64) error {
 	nextGeneration := generation + 1
 	nextSlot := g.leaseSlot(nextGeneration)
 	for range leaseSwitchRetries {
-		if g.closed.Load() {
-			return ErrGeneratorClosed
-		}
 		if g.active.Load() != generation {
 			return nil
 		}

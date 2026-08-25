@@ -10,7 +10,7 @@ import (
 func TestStateLayoutAndOrder(t *testing.T) {
 	milliseconds := []int64{EpochMilliseconds + 12, EpochMilliseconds + 12, EpochMilliseconds + 12, EpochMilliseconds + 13}
 	index := 0
-	generator := mustNewMutexGenerator(513, milliseconds[index])
+	generator := mustNewActorGenerator(513, milliseconds[index])
 	index++
 
 	first, err := leaseIDAtValue(generator, milliseconds[index])
@@ -52,7 +52,7 @@ func TestStateLayoutAndOrder(t *testing.T) {
 
 func TestStateWaitsWhenSequenceIsExhausted(t *testing.T) {
 	initialMilliseconds := time.Now().UnixMilli()
-	generator := mustNewMutexGenerator(1, initialMilliseconds)
+	generator := mustNewActorGenerator(1, initialMilliseconds)
 
 	var last int64
 	var err error
@@ -75,7 +75,7 @@ func TestStateWaitsWhenSequenceIsExhausted(t *testing.T) {
 }
 
 func TestStateDetectsClockRollback(t *testing.T) {
-	generator := mustNewMutexGenerator(1, EpochMilliseconds+10)
+	generator := mustNewActorGenerator(1, EpochMilliseconds+10)
 	if _, err := leaseIDAtValue(generator, EpochMilliseconds+10); err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestStateDetectsClockRollback(t *testing.T) {
 }
 
 func TestStateDetectsRollbackBeforeEpoch(t *testing.T) {
-	generator := mustNewMutexGenerator(1, EpochMilliseconds+10)
+	generator := mustNewActorGenerator(1, EpochMilliseconds+10)
 	if _, err := leaseIDAtValue(generator, EpochMilliseconds+10); err != nil {
 		t.Fatal(err)
 	}
@@ -94,15 +94,15 @@ func TestStateDetectsRollbackBeforeEpoch(t *testing.T) {
 	}
 }
 
-func TestNewMutexRejectsTimestampBeforeEpoch(t *testing.T) {
-	_, err := newMutexGenerator(1, EpochMilliseconds-1)
+func TestNewActorRejectsTimestampBeforeEpoch(t *testing.T) {
+	_, err := newActorGenerator(1, EpochMilliseconds-1, DefaultActorCapacity)
 	if !errors.Is(err, ErrInvalidTimestamp) {
-		t.Fatalf("newMutexGenerator() error = %v, want ErrInvalidTimestamp", err)
+		t.Fatalf("newActorGenerator() error = %v, want ErrInvalidTimestamp", err)
 	}
 }
 
 func TestStateSupportsMaximumTimestampWithoutSignBit(t *testing.T) {
-	generator := mustNewMutexGenerator(MaxMachineID, MaxTimestampMilliseconds)
+	generator := mustNewActorGenerator(MaxMachineID, MaxTimestampMilliseconds)
 
 	var last int64
 	var err error
@@ -128,9 +128,9 @@ func TestStateSupportsMaximumTimestampWithoutSignBit(t *testing.T) {
 	}
 }
 
-func TestNewMutexRejectsTimestampAfterMaximum(t *testing.T) {
-	_, err := newMutexGenerator(1, MaxTimestampMilliseconds+1)
+func TestNewActorRejectsTimestampAfterMaximum(t *testing.T) {
+	_, err := newActorGenerator(1, MaxTimestampMilliseconds+1, DefaultActorCapacity)
 	if !errors.Is(err, ErrInvalidTimestamp) {
-		t.Fatalf("newMutexGenerator() error = %v, want ErrInvalidTimestamp", err)
+		t.Fatalf("newActorGenerator() error = %v, want ErrInvalidTimestamp", err)
 	}
 }

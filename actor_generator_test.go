@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-func newBufferedBenchmarkGenerator() *MutexGenerator {
-	generator := &MutexGenerator{}
+func newBufferedBenchmarkGenerator() *ActorGenerator {
+	generator := &ActorGenerator{}
 	for generation := range uint64(leaseQueueSize) {
 		start := int64(generation) * defaultLeaseSize
 		segment := newLease(0, 1, start, start+defaultLeaseSize-1)
@@ -21,8 +21,8 @@ func newBufferedBenchmarkGenerator() *MutexGenerator {
 	return generator
 }
 
-func BenchmarkMutexNextCachedHotPath(b *testing.B) {
-	generator := &MutexGenerator{}
+func BenchmarkActorNextCachedHotPath(b *testing.B) {
+	generator := &ActorGenerator{}
 	segment := newLease(0, 0, 0, math.MaxInt64-1)
 	generator.queue.slots[0].value.Store(segment)
 	b.ReportAllocs()
@@ -34,8 +34,8 @@ func BenchmarkMutexNextCachedHotPath(b *testing.B) {
 }
 
 // Sustained benchmarks include the 4096 IDs/ms format limit.
-func BenchmarkMutexNextSustained(b *testing.B) {
-	generator := mustNewMutex(b, 1)
+func BenchmarkActorNextSustained(b *testing.B) {
+	generator := mustNewActor(b, 1)
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -57,7 +57,7 @@ func BenchmarkMutexNextSustained(b *testing.B) {
 const shortBenchmarkBatchSize = 1000
 
 // ShortBatch consumes prefilled ring slots before the format limit can dominate.
-func BenchmarkMutexNextShortBatch(b *testing.B) {
+func BenchmarkActorNextShortBatch(b *testing.B) {
 	generator := newBufferedBenchmarkGenerator()
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -77,24 +77,33 @@ func BenchmarkMutexNextShortBatch(b *testing.B) {
 	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*shortBenchmarkBatchSize), "ns/id")
 }
 
-func TestNewMutexMachineIDBounds(t *testing.T) {
+func TestNewActorMachineIDAndCapacityBounds(t *testing.T) {
 	for _, machineID := range []int64{0, MaxMachineID} {
-		generator, err := NewMutex(machineID)
+		generator, err := NewActor(machineID)
 		if err != nil {
-			t.Fatalf("NewMutex(%d) returned error: %v", machineID, err)
+			t.Fatalf("NewActor(%d) returned error: %v", machineID, err)
 		}
-		generator.Close()
+		generator.refillActor.Close()
 	}
 
 	for _, machineID := range []int64{-1, MaxMachineID + 1} {
-		if _, err := NewMutex(machineID); !errors.Is(err, ErrInvalidMachineID) {
-			t.Fatalf("NewMutex(%d) error = %v, want ErrInvalidMachineID", machineID, err)
+		if _, err := NewActor(machineID); !errors.Is(err, ErrInvalidMachineID) {
+			t.Fatalf("NewActor(%d) error = %v, want ErrInvalidMachineID", machineID, err)
 		}
 	}
+	for _, capacity := range []int{0, leaseQueueSize - 1} {
+		if _, err := NewActor(1, capacity); !errors.Is(err, ErrInvalidActorCapacity) {
+			t.Fatalf("NewActor(capacity=%d) error = %v, want ErrInvalidActorCapacity", capacity, err)
+		}
+	}
+	if _, err := NewActor(1, leaseQueueSize, leaseQueueSize); !errors.Is(err, ErrInvalidActorCapacity) {
+		t.Fatalf("NewActor(two capacities) error = %v, want ErrInvalidActorCapacity", err)
+	}
+	mustNewActor(t, 1, 128)
 }
 
-func TestMutexInitializesFullLeaseQueue(t *testing.T) {
-	generator := mustNewMutex(t, 1)
+func TestActorInitializesFullLeaseQueue(t *testing.T) {
+	generator := mustNewActor(t, 1)
 	if leaseQueueSize != 64 {
 		t.Fatalf("lease queue size = %d, want 64", leaseQueueSize)
 	}
@@ -112,8 +121,8 @@ func TestMutexInitializesFullLeaseQueue(t *testing.T) {
 	}
 }
 
-func TestMutexNextIsConcurrentAndUnique(t *testing.T) {
-	generator := mustNewMutex(t, 1)
+func TestActorNextIsConcurrentAndUnique(t *testing.T) {
+	generator := mustNewActor(t, 1)
 
 	const count = 10_000
 	ids := make(chan int64, count)
@@ -160,8 +169,8 @@ func TestMutexNextIsConcurrentAndUnique(t *testing.T) {
 	}
 }
 
-func TestMutexNextSwitchesToNextQueueSlot(t *testing.T) {
-	generator := mustNewMutex(t, 2)
+func TestActorNextSwitchesToNextQueueSlot(t *testing.T) {
+	generator := mustNewActor(t, 2)
 	seen := make(map[int64]struct{}, defaultLeaseSize+1)
 	for range defaultLeaseSize + 1 {
 		value, err := generator.Next()
@@ -178,8 +187,8 @@ func TestMutexNextSwitchesToNextQueueSlot(t *testing.T) {
 	}
 }
 
-func TestMutexActorRefillsEmptiedSlot(t *testing.T) {
-	generator := mustNewMutex(t, 3)
+func TestActorRefillsEmptiedSlot(t *testing.T) {
+	generator := mustNewActor(t, 3)
 	for range defaultLeaseSize + 1 {
 		if _, err := generator.Next(); err != nil {
 			t.Fatal(err)
@@ -198,8 +207,8 @@ func TestMutexActorRefillsEmptiedSlot(t *testing.T) {
 	t.Fatal("actor did not refill the emptied slot")
 }
 
-func TestMutexConsumersDoNotWaitForActorWhileQueueHasLeases(t *testing.T) {
-	generator := mustNewMutex(t, 3)
+func TestActorConsumersDoNotWaitWhileQueueHasLeases(t *testing.T) {
+	generator := mustNewActor(t, 3)
 	generator.mu.Lock()
 	locked := true
 	defer func() {
@@ -234,8 +243,8 @@ func TestMutexConsumersDoNotWaitForActorWhileQueueHasLeases(t *testing.T) {
 	locked = false
 }
 
-func TestMutexUnavailableQueueReturnsAfterTenRetries(t *testing.T) {
-	generator := &MutexGenerator{}
+func TestActorUnavailableQueueReturnsAfterTenRetries(t *testing.T) {
+	generator := &ActorGenerator{}
 	exhausted := newLease(0, 1, 0, -1)
 	generator.queue.slots[0].value.Store(exhausted)
 	generator.queue.slots[1].refilling.Store(true)
@@ -248,8 +257,8 @@ func TestMutexUnavailableQueueReturnsAfterTenRetries(t *testing.T) {
 	}
 }
 
-func TestMutexConcurrentExhaustionSwitchesOnce(t *testing.T) {
-	generator := mustNewMutex(t, 3)
+func TestActorConcurrentExhaustionSwitchesOnce(t *testing.T) {
+	generator := mustNewActor(t, 3)
 	for range defaultLeaseSize {
 		if _, err := generator.Next(); err != nil {
 			t.Fatal(err)
@@ -288,8 +297,8 @@ func TestMutexConcurrentExhaustionSwitchesOnce(t *testing.T) {
 	}
 }
 
-func TestMutexActorFailureCanBeRetried(t *testing.T) {
-	generator := mustNewRunningMutexGenerator(t, 4, MaxTimestampMilliseconds)
+func TestActorFailureCanBeRetried(t *testing.T) {
+	generator := mustNewRunningActorGenerator(t, 4, MaxTimestampMilliseconds)
 	for range IDsPerMillisecond {
 		if _, err := generator.Next(); err != nil {
 			t.Fatalf("consume initial queue: %v", err)
@@ -331,41 +340,4 @@ func TestMutexActorFailureCanBeRetried(t *testing.T) {
 		runtime.Gosched()
 	}
 	t.Fatal("actor did not recover after state was repaired")
-}
-
-func TestMutexCloseStopsGeneration(t *testing.T) {
-	generator := mustNewMutex(t, 5)
-	generator.Close()
-	if _, err := generator.Next(); !errors.Is(err, ErrGeneratorClosed) {
-		t.Fatalf("Next() after Close error = %v, want ErrGeneratorClosed", err)
-	}
-	if _, err := generator.NextBatch(); !errors.Is(err, ErrGeneratorClosed) {
-		t.Fatalf("NextBatch() after Close error = %v, want ErrGeneratorClosed", err)
-	}
-}
-
-func TestMutexCloseCanRaceWithQueueSwitch(t *testing.T) {
-	for range 100 {
-		generator, err := NewMutex(6)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for range defaultLeaseSize {
-			if _, err := generator.Next(); err != nil {
-				t.Fatal(err)
-			}
-		}
-
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			_, _ = generator.Next()
-		}()
-		generator.Close()
-		select {
-		case <-done:
-		case <-time.After(time.Second):
-			t.Fatal("Next did not finish while Close raced with a queue switch")
-		}
-	}
 }

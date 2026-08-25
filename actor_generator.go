@@ -1,7 +1,6 @@
 package id
 
 import (
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -9,33 +8,47 @@ import (
 	"github.com/lee-ext/go-extend/ext"
 )
 
-// MutexGenerator 使用互斥锁保护号段预留，Next 从号段本地并发取号。
-type MutexGenerator struct {
+// ActorGenerator 从环形号段队列并发取号，唯一后台 Actor 负责回填耗尽的号段。
+type ActorGenerator struct {
 	state *idState
 	mu    sync.Mutex
 
 	queue  leaseQueue
 	active atomic.Uint64
 
-	refillActor   ext.Actor
-	actorLaunches atomic.Int64
-	closed        atomic.Bool
-	closeOnce     sync.Once
+	refillActor ext.Actor
 }
 
-// NewMutex 创建 MutexGenerator。
+// DefaultActorCapacity 是 Actor 邮箱的默认容量。
+const DefaultActorCapacity = 64
+
+// NewActor 创建 ActorGenerator。actorCapacity 省略时默认为 64，显式值不能小于 64。
 // 同一个 machineID 在同一时刻只能分配给一个生成器。
-func NewMutex(machineID int64) (*MutexGenerator, error) {
-	return newMutexGenerator(machineID, time.Now().UnixMilli())
+func NewActor(machineID int64, actorCapacity ...int) (*ActorGenerator, error) {
+	capacity, err := resolveActorCapacity(actorCapacity)
+	if err != nil {
+		return nil, err
+	}
+	return newActorGenerator(machineID, time.Now().UnixMilli(), capacity)
 }
 
-// newMutexGenerator 使用指定的初始 Unix 毫秒时间戳创建 MutexGenerator。
-func newMutexGenerator(machineID, initialUnixMilliseconds int64) (*MutexGenerator, error) {
+func resolveActorCapacity(capacities []int) (int, error) {
+	if len(capacities) == 0 {
+		return DefaultActorCapacity, nil
+	}
+	if len(capacities) != 1 || capacities[0] < leaseQueueSize {
+		return 0, ErrInvalidActorCapacity
+	}
+	return capacities[0], nil
+}
+
+// newActorGenerator 使用指定的初始 Unix 毫秒时间戳创建 ActorGenerator。
+func newActorGenerator(machineID, initialUnixMilliseconds int64, actorCapacity int) (*ActorGenerator, error) {
 	state, err := newIDState(machineID, initialUnixMilliseconds)
 	if err != nil {
 		return nil, err
 	}
-	generator := &MutexGenerator{state: state}
+	generator := &ActorGenerator{state: state}
 	for generation := range uint64(leaseQueueSize) {
 		segment, err := state.lease(initialUnixMilliseconds, defaultLeaseSize)
 		if err != nil {
@@ -48,17 +61,14 @@ func newMutexGenerator(machineID, initialUnixMilliseconds int64) (*MutexGenerato
 		slot := &generator.queue.slots[index]
 		slot.refill = func() { generator.fillLeaseSlot(slot) }
 	}
-	generator.refillActor = ext.Actor_(leaseQueueSize, func(any) {})
+	generator.refillActor = ext.Actor_(actorCapacity, func(any) {})
 	return generator, nil
 }
 
 // Next 从内部号段返回下一个全局唯一的 ID，号段会自动续租。
 // 时钟回拨在号段预留时检测；缓存尚可用时 Next 可能继续成功。
-func (g *MutexGenerator) Next() (int64, error) {
+func (g *ActorGenerator) Next() (int64, error) {
 	for {
-		if g.closed.Load() {
-			return 0, ErrGeneratorClosed
-		}
 		generation := g.active.Load()
 		current := g.leaseSlot(generation).value.Load()
 		if current == nil || current.generation != generation {
@@ -77,35 +87,21 @@ func (g *MutexGenerator) Next() (int64, error) {
 	}
 }
 
-func (g *MutexGenerator) reserveLease() (*lease, error) {
+func (g *ActorGenerator) reserveLease() (*lease, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.state.lease(time.Now().UnixMilli(), defaultLeaseSize)
 }
 
-func (g *MutexGenerator) reserveBatch() (sequenceRange, error) {
+func (g *ActorGenerator) reserveBatch() (sequenceRange, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.state.reserve(time.Now().UnixMilli(), defaultLeaseSize)
 }
 
-// Close 停止后台号段填充 Actor。Close 返回后 Next 和 NextBatch 返回 ErrGeneratorClosed。
-func (g *MutexGenerator) Close() {
-	g.closeOnce.Do(func() {
-		g.closed.Store(true)
-		for g.actorLaunches.Load() != 0 {
-			runtime.Gosched()
-		}
-		g.refillActor.Close()
-	})
-}
-
 // NextBatch 一次返回 64 个严格递增的 ID。
 // 批内 ID 具有相同时间戳和 machineID；与 Next 并发混用时保证唯一，但不保证按完成顺序全局单调。
-func (g *MutexGenerator) NextBatch() (ext.Vec[int64], error) {
-	if g.closed.Load() {
-		return nil, ErrGeneratorClosed
-	}
+func (g *ActorGenerator) NextBatch() (ext.Vec[int64], error) {
 	reserved, err := g.reserveBatch()
 	if err != nil {
 		return nil, err

@@ -7,35 +7,35 @@ import (
 	"github.com/lee-ext/go-extend/ext"
 )
 
-func mustNewMutexGenerator(machineID, unixMilliseconds int64) *MutexGenerator {
+func mustNewActorGenerator(machineID, unixMilliseconds int64) *ActorGenerator {
 	state, err := newIDState(machineID, unixMilliseconds)
 	if err != nil {
 		panic(err)
 	}
-	return &MutexGenerator{state: state}
+	return &ActorGenerator{state: state}
 }
 
-func mustNewMutex(tb testing.TB, machineID int64) *MutexGenerator {
+func mustNewActor(tb testing.TB, machineID int64, actorCapacity ...int) *ActorGenerator {
 	tb.Helper()
-	generator, err := NewMutex(machineID)
+	generator, err := NewActor(machineID, actorCapacity...)
 	if err != nil {
 		panic(err)
 	}
-	tb.Cleanup(generator.Close)
+	tb.Cleanup(generator.refillActor.Close)
 	return generator
 }
 
-func mustNewRunningMutexGenerator(tb testing.TB, machineID, unixMilliseconds int64) *MutexGenerator {
+func mustNewRunningActorGenerator(tb testing.TB, machineID, unixMilliseconds int64) *ActorGenerator {
 	tb.Helper()
-	generator, err := newMutexGenerator(machineID, unixMilliseconds)
+	generator, err := newActorGenerator(machineID, unixMilliseconds, DefaultActorCapacity)
 	if err != nil {
 		panic(err)
 	}
-	tb.Cleanup(generator.Close)
+	tb.Cleanup(generator.refillActor.Close)
 	return generator
 }
 
-func mustNext(generator *MutexGenerator) int64 {
+func mustNext(generator *ActorGenerator) int64 {
 	value, err := generator.Next()
 	if err != nil {
 		panic(err)
@@ -43,7 +43,7 @@ func mustNext(generator *MutexGenerator) int64 {
 	return value
 }
 
-func mustNextBatch(generator *MutexGenerator) ext.Vec[int64] {
+func mustNextBatch(generator *ActorGenerator) ext.Vec[int64] {
 	values, err := generator.NextBatch()
 	if err != nil {
 		panic(err)
@@ -51,13 +51,13 @@ func mustNextBatch(generator *MutexGenerator) ext.Vec[int64] {
 	return values
 }
 
-func acquireMutexAtValue(generator *MutexGenerator, unixMilliseconds int64, size int) (*lease, error) {
+func acquireMutexAtValue(generator *ActorGenerator, unixMilliseconds int64, size int) (*lease, error) {
 	generator.mu.Lock()
 	defer generator.mu.Unlock()
 	return generator.state.lease(unixMilliseconds, size)
 }
 
-func leaseIDAtValue(generator *MutexGenerator, unixMilliseconds int64) (int64, error) {
+func leaseIDAtValue(generator *ActorGenerator, unixMilliseconds int64) (int64, error) {
 	segment, err := acquireMutexAtValue(generator, unixMilliseconds, 1)
 	if err != nil {
 		return 0, err

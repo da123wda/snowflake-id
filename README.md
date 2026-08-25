@@ -1,12 +1,15 @@
-# id
+# snowflake-id
 
-`id` 是一个面向高并发 Go 服务的 64 位 ID 生成器，使用“时间戳 + 机器 ID + 序列号”生成非负、可解析的 `int64` ID。
+`snowflake-id` 提供两个完全隔离的 64 位 ID 生成包，使用“时间戳 + 机器 ID + 序列号”生成非负、可解析的 `int64` ID：
+
+- 根包：固定 64 槽环形队列，每个生成器只有一个 `ext.Actor` 异步回填；
+- `mutex` 子包：保留原始实现，当前号段耗尽时使用互斥锁同步续租。
 
 > [!IMPORTANT]
 > - 每个进程或生成器必须使用独占的 `machineID`；本项目不负责跨进程分配机器 ID。
 > - `machineID` 的有效范围是 `0`～`1023`，单个机器 ID 的格式上限是每毫秒 `4096` 个 ID。
 > - 系统时钟回拨会在预留新号段时返回 `ErrInvalidTimestamp`；当前已缓存的号段仍可能继续生成 ID。
-> - 当前模块路径是 `id`，从其他本地模块使用时需要通过 `go.work` 或 `replace` 引入。
+> - Actor 版和 Mutex 版之间不会协调机器 ID；同时使用时也必须分配不同的 `machineID`。
 
 ## 项目介绍
 
@@ -52,18 +55,10 @@ ID = ((unixMilliseconds - EpochMilliseconds) << 22)
 
 项目要求 Go 1.27 或更高版本。
 
-如果调用方与本项目位于相邻目录，可在调用方的 `go.mod` 中加入：
-
-```go
-require id v0.0.0
-
-replace id => ../id
-```
-
-也可以在共同的工作区执行：
+安装：
 
 ```bash
-go work use ./id ./your-service
+go get github.com/da123wda/snowflake-id
 ```
 
 下面的示例演示单个 ID、解析和批量生成：
@@ -76,12 +71,13 @@ import (
 	"log"
 	"time"
 
-	idgen "id"
+	idgen "github.com/da123wda/snowflake-id"
 )
 
 func main() {
 	// 42 必须在所有同时运行的生成器中保持唯一。
-	generator, err := idgen.NewMutex(42)
+	// 第二个参数是可选的 Actor 邮箱容量，省略时默认 64。
+	generator, err := idgen.NewActor(42)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -124,10 +120,10 @@ func main() {
 
 ### 并发使用
 
-一个 `MutexGenerator` 可以被多个 goroutine 共享。在前一个示例中增加 `sync` import 后，可以加入以下函数：
+一个 `ActorGenerator` 可以被多个 goroutine 共享。在前一个示例中增加 `sync` import 后，可以加入以下函数：
 
 ```go
-func generateConcurrently(generator *idgen.MutexGenerator, consume func(int64)) {
+func generateConcurrently(generator *idgen.ActorGenerator, consume func(int64)) {
 	var wg sync.WaitGroup
 	for range 100 {
 		wg.Go(func() {
@@ -145,14 +141,24 @@ func generateConcurrently(generator *idgen.MutexGenerator, consume func(int64)) 
 
 并发调用保证 ID 唯一，但不保证按照 goroutine 完成顺序全局单调。若业务要求严格的消费顺序，需要在调用层串行化。
 
+### 使用原始 Mutex 版
+
+```go
+import mutexid "github.com/da123wda/snowflake-id/mutex"
+
+generator, err := mutexid.NewMutex(43)
+value, err := generator.Next()
+```
+
+`mutex` 是独立包，不会创建 Actor，也不会引用根包的状态机。其 `Next` 热路径同样使用原子 CAS，仅在当前 64-ID 号段耗尽时加锁续租。
+
 ## 公开 API
 
 | API | 说明 |
 | --- | --- |
-| `NewMutex(machineID)` | 创建并发安全的生成器，校验机器 ID 和当前时间 |
-| `(*MutexGenerator).Next()` | 获取一个 ID，优先从当前内部号段无锁取号 |
-| `(*MutexGenerator).NextBatch()` | 返回 64 个严格递增且属于同一毫秒的 ID |
-| `(*MutexGenerator).Close()` | 停止唯一的后台号段填充 Actor |
+| `NewActor(machineID, actorCapacity...)` | 创建唯一 Actor 的生成器；邮箱容量默认 64，显式值至少 64 |
+| `(*ActorGenerator).Next()` | 从当前环形号段原子取号 |
+| `(*ActorGenerator).NextBatch()` | 返回 64 个严格递增且属于同一毫秒的 ID |
 | `Parse(value)` | 解析时间、机器 ID 和序列号 |
 | `EpochMilliseconds` | 自定义纪元的 Unix 毫秒值 |
 | `MaxMachineID` | 最大机器 ID，值为 `1023` |
@@ -167,7 +173,11 @@ func generateConcurrently(generator *idgen.MutexGenerator, consume func(int64)) 
 | `ErrInvalidTimestamp` | 当前时间早于纪元、发生回拨或超过最大时间 |
 | `ErrInvalidID` | `Parse` 收到负数 ID |
 | `ErrLeaseUnavailable` | 号段队列暂时断供，调用方可以重试 |
-| `ErrGeneratorClosed` | 生成器已经关闭 |
+| `ErrInvalidActorCapacity` | Actor 邮箱容量小于 64，或传入多个容量参数 |
+
+`ActorGenerator` 不提供关闭 Actor 的 API，适合作为服务进程内的长生命周期实例。一个生成器实例在构造时只创建一个 Actor，后续所有耗尽号段都提交给该 Actor 回填。
+
+`mutex` 子包独立公开 `NewMutex`、`MutexGenerator`、`Parse` 以及同布局常量和基础校验错误。
 
 ## 内部实现
 
@@ -179,9 +189,10 @@ func generateConcurrently(generator *idgen.MutexGenerator, consume func(int64)) 
 | `state.go` | 校验时间并预留连续序列号范围 |
 | `lease.go` | 保存 64 个 ID 的内部号段，通过原子 CAS 并发取号 |
 | `lease_queue.go` | 固定 64 槽环形队列、无锁切换和 Actor 回填 |
-| `mutex_generator.go` | 对外生成器、唯一 Actor 生命周期和批量生成 |
+| `actor_generator.go` | Actor 生成器初始化、唯一 Actor 和批量生成 |
 | `parse.go` | 使用位移和掩码解析 ID |
 | `errors.go` | 定义公开错误 |
+| `mutex/` | 完全独立的原始互斥锁续租包 |
 
 ### `Next` 生成流程
 
@@ -211,7 +222,7 @@ flowchart LR
 5. Actor 函数在构造时按槽位创建并复用，持续取号路径没有临时闭包分配；
 6. 下一槽尚未就绪时让出调度权重试 10 次，仍未就绪则返回可重试的 `ErrLeaseUnavailable`。
 
-Actor 回填和 `NextBatch` 使用同一个 `MutexGenerator.mu` 更新 `idState`，因此不会预留重叠的序列号。`Next` 的逐 ID 消费及 generation 切换不获取该锁。
+Actor 回填和 `NextBatch` 使用同一个 `ActorGenerator.mu` 更新 `idState`，因此不会预留重叠的序列号。`Next` 的逐 ID 消费及 generation 切换不获取该锁。
 
 ### `NextBatch` 生成流程
 
@@ -248,27 +259,27 @@ Actor 回填和 `NextBatch` 使用同一个 `MutexGenerator.mu` 更新 `idState`
 
 | 场景 | 中位数 | 换算吞吐 | 内存分配 |
 | --- | ---: | ---: | ---: |
-| `Next` 缓存号段热路径 | 5.463 ns/ID | 183.05 M op/s | 0 B/op，0 allocs/op |
-| `Next` 预填充队列内每轮 1000 个 ID | 6.653 ns/ID | 150.31 M op/s | 0 B/op，0 allocs/op |
-| `Next` 并行持续生成 | 244.2 ns/ID | 4.10 M ID/s | 0 B/op，0 allocs/op |
+| Actor `Next` 缓存号段热路径 | 5.124 ns/ID | 195.16 M op/s | 0 B/op，0 allocs/op |
+| Actor `Next` 预填充队列内每轮 1000 个 ID | 5.828 ns/ID | 171.59 M op/s | 0 B/op，0 allocs/op |
+| Actor `Next` 并行持续生成 | 244.0 ns/ID | 4.10 M ID/s | 0 B/op，0 allocs/op |
 | `NextBatch` 并行持续生成 | 244.2 ns/ID | 4.10 M ID/s | 每批 512 B、1 alloc |
 
 并行持续结果已经接近 12 位序列号决定的单机器格式上限 4.096 M ID/s。热路径和短突发结果用于观察代码开销，它们刻意排除了持续运行时的每毫秒格式上限，不能作为单机器长期吞吐。
 
-单独运行 50,000 个 ID 的性能门槛测试，5 次中位数为 `11.9973 ms`，即 `4,167,604 ID/s`，高于测试要求的 `50,000 ID/s`。该短样本会受到起止毫秒边界影响，应以并行持续 Benchmark 评估长期吞吐。
+单独运行 50,000 个 ID 的性能门槛测试，5 次中位数为 `12.1834 ms`，即 `4,103,945 ID/s`，高于测试要求的 `50,000 ID/s`。该短样本会受到起止毫秒边界影响，应以并行持续 Benchmark 评估长期吞吐。
 
 复现代表性 Benchmark：
 
 ```bash
 go test -run "^$" \
-  -bench "^BenchmarkMutex(NextCachedHotPath|NextSustained|NextShortBatch|NextBatchParallelSustained)$" \
+  -bench "^BenchmarkActor(NextCachedHotPath|NextSustained|NextShortBatch|NextBatchParallelSustained)$" \
   -benchmem -benchtime=1s -count=5
 ```
 
 复现吞吐门槛测试：
 
 ```bash
-go test -run "^TestMutexGenerates50000IDsPerSecond$" -v -count=5
+go test -run "^TestActorGenerates50000IDsPerSecond$" -v -count=5
 ```
 
 性能结果会受到 CPU 调频、系统负载、Go 版本和调度器状态影响；比较改动前后性能时应在同一台机器上交替运行并关注多次结果分布。

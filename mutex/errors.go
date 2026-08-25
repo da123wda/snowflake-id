@@ -1,0 +1,11 @@
+package mutex
+
+import "errors"
+
+var (
+	ErrInvalidMachineID = errors.New("id/mutex: machine ID must be between 0 and 1023")
+	ErrInvalidTimestamp = errors.New("id/mutex: invalid timestamp")
+	ErrInvalidID        = errors.New("id/mutex: invalid ID")
+
+	errInvalidSegmentSize = errors.New("id/mutex: segment size must be between 1 and 4096")
+)
