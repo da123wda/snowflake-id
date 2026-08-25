@@ -34,10 +34,24 @@ func mustNewActor(tb testing.TB, machineID int64) *ActorGenerator {
 
 func mustNewRunningActorGenerator(tb testing.TB, machineID, unixMilliseconds int64) *ActorGenerator {
 	tb.Helper()
-	generator, err := newActorGenerator(machineID, testEpochMilliseconds, unixMilliseconds)
+	state, err := newIDState(machineID, testEpochMilliseconds, unixMilliseconds)
 	if err != nil {
 		panic(err)
 	}
+	generator := &ActorGenerator{state: state}
+	for generation := range uint64(leaseQueueSize) {
+		segment, err := state.lease(unixMilliseconds, defaultLeaseSize)
+		if err != nil {
+			panic(err)
+		}
+		segment.generation = generation
+		generator.queue.slots[generation].value.Store(segment)
+	}
+	for index := range leaseQueueSize {
+		slot := &generator.queue.slots[index]
+		slot.refill = func() { generator.fillLeaseSlot(slot) }
+	}
+	generator.refillActor = ext.Actor_(actorCapacity, func(any) {})
 	tb.Cleanup(generator.refillActor.Close)
 	return generator
 }

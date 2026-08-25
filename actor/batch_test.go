@@ -12,17 +12,13 @@ import (
 )
 
 func nextBatchAt(generator *ActorGenerator, unixMilliseconds int64) (ext.Vec[int64], error) {
-	reserved, err := reserveBatchAt(generator, unixMilliseconds)
+	generator.mu.Lock()
+	reserved, err := generator.state.reserve(unixMilliseconds, defaultLeaseSize)
+	generator.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
 	return batchValues(reserved, generator.state.machineID), nil
-}
-
-func reserveBatchAt(generator *ActorGenerator, unixMilliseconds int64) (sequenceRange, error) {
-	generator.mu.Lock()
-	defer generator.mu.Unlock()
-	return generator.state.reserve(unixMilliseconds, defaultLeaseSize)
 }
 
 func TestActorNextBatchReturns64OrderedIDs(t *testing.T) {

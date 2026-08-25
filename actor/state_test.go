@@ -95,9 +95,9 @@ func TestStateDetectsRollbackBeforeEpoch(t *testing.T) {
 }
 
 func TestNewActorRejectsTimestampBeforeEpoch(t *testing.T) {
-	_, err := newActorGenerator(1, testEpochMilliseconds, testEpochMilliseconds-1)
+	_, err := newIDState(1, testEpochMilliseconds, testEpochMilliseconds-1)
 	if !errors.Is(err, ErrInvalidTimestamp) {
-		t.Fatalf("newActorGenerator() error = %v, want ErrInvalidTimestamp", err)
+		t.Fatalf("newIDState() error = %v, want ErrInvalidTimestamp", err)
 	}
 }
 
@@ -129,8 +129,8 @@ func TestStateSupportsMaximumTimestampWithoutSignBit(t *testing.T) {
 }
 
 func TestNewActorRejectsTimestampAfterMaximum(t *testing.T) {
-	_, err := newActorGenerator(1, testEpochMilliseconds, testMaxTimestampMilliseconds+1)
+	_, err := newIDState(1, testEpochMilliseconds, testMaxTimestampMilliseconds+1)
 	if !errors.Is(err, ErrInvalidTimestamp) {
-		t.Fatalf("newActorGenerator() error = %v, want ErrInvalidTimestamp", err)
+		t.Fatalf("newIDState() error = %v, want ErrInvalidTimestamp", err)
 	}
 }

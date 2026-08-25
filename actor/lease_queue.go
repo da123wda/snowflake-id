@@ -3,6 +3,7 @@ package actor
 import (
 	"runtime"
 	"sync/atomic"
+	"time"
 )
 
 type leaseSlot struct {
@@ -31,7 +32,9 @@ func (g *ActorGenerator) requestRefill(slot *leaseSlot, generation uint64) {
 func (g *ActorGenerator) fillLeaseSlot(slot *leaseSlot) {
 	defer slot.refilling.Store(false)
 	generation := slot.refillGeneration.Load()
-	segment, err := g.reserveLease()
+	g.mu.Lock()
+	segment, err := g.state.lease(time.Now().UnixMilli(), defaultLeaseSize)
+	g.mu.Unlock()
 	if err != nil {
 		segment = &lease{generation: generation, err: err, end: -1}
 	} else {

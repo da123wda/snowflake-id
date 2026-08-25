@@ -24,12 +24,8 @@ const actorCapacity = 64
 // NewActor 使用自定义纪元创建 ActorGenerator。Actor 邮箱容量固定为 64。
 // 同一个 machineID 在同一时刻只能分配给一个生成器。
 func NewActor(machineID int64, epoch time.Time) (*ActorGenerator, error) {
-	return newActorGenerator(machineID, epoch.UnixMilli(), time.Now().UnixMilli())
-}
-
-// newActorGenerator 使用指定的初始 Unix 毫秒时间戳创建 ActorGenerator。
-func newActorGenerator(machineID, epochMilliseconds, initialUnixMilliseconds int64) (*ActorGenerator, error) {
-	state, err := newIDState(machineID, epochMilliseconds, initialUnixMilliseconds)
+	initialUnixMilliseconds := time.Now().UnixMilli()
+	state, err := newIDState(machineID, epoch.UnixMilli(), initialUnixMilliseconds)
 	if err != nil {
 		return nil, err
 	}
@@ -72,22 +68,12 @@ func (g *ActorGenerator) Next() (int64, error) {
 	}
 }
 
-func (g *ActorGenerator) reserveLease() (*lease, error) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.state.lease(time.Now().UnixMilli(), defaultLeaseSize)
-}
-
-func (g *ActorGenerator) reserveBatch() (sequenceRange, error) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.state.reserve(time.Now().UnixMilli(), defaultLeaseSize)
-}
-
 // NextBatch 一次返回 64 个严格递增的 ID。
 // 批内 ID 具有相同时间戳和 machineID；与 Next 并发混用时保证唯一，但不保证按完成顺序全局单调。
 func (g *ActorGenerator) NextBatch() (ext.Vec[int64], error) {
-	reserved, err := g.reserveBatch()
+	g.mu.Lock()
+	reserved, err := g.state.reserve(time.Now().UnixMilli(), defaultLeaseSize)
+	g.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
