@@ -117,11 +117,6 @@ func (g *ActorGenerator) nextBatch(businessID int64) (ext.Vec[int64], error) {
 	return batchValuesWithState(reserved, g.state, businessID), nil
 }
 
-func batchValues(reserved sequenceRange, machineID int64) ext.Vec[int64] {
-	state := &idState{layout: defaultBitLayout, machineID: machineID}
-	return batchValuesWithState(reserved, state, 0)
-}
-
 func batchValuesWithState(reserved sequenceRange, state *idState, businessID int64) ext.Vec[int64] {
 	values := make(ext.Vec[int64], defaultLeaseSize)
 	prefix := state.layout.prefix(reserved.timestamp, state.machineID, businessID)

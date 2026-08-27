@@ -16,11 +16,6 @@ type idState struct {
 	sequence          int64
 }
 
-// newIDState 使用指定的初始 Unix 毫秒时间戳创建生成状态。
-func newIDState(machineID, epochMilliseconds, initialUnixMilliseconds int64) (*idState, error) {
-	return newIDStateWithLayout(defaultBitLayout, machineID, epochMilliseconds, initialUnixMilliseconds)
-}
-
 func newIDStateWithLayout(layout bitLayout, machineID, epochMilliseconds, initialUnixMilliseconds int64) (*idState, error) {
 	if machineID < 0 || machineID > layout.machineIDMask {
 		return nil, ErrInvalidMachineID
