@@ -18,8 +18,12 @@ type lease struct {
 }
 
 func newLease(timestamp, machineID, start, end int64) *lease {
+	return newLeaseWithPrefix(defaultBitLayout.prefix(timestamp, machineID, 0), start, end)
+}
+
+func newLeaseWithPrefix(prefix, start, end int64) *lease {
 	segment := &lease{
-		prefix: (timestamp << timestampShift) | (machineID << machineIDShift),
+		prefix: prefix,
 		end:    end,
 	}
 	segment.next.Store(start)

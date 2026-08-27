@@ -1,27 +1,36 @@
 # snowflake-id
 
-`snowflake-id` 是一个并发安全、可解析的 Go `int64` ID 生成器。项目提供两个完全独立的实现包：
+`snowflake-id` 是一个并发安全、可解析的 Go `int64` ID 生成器，提供两套彼此独立的实现：
 
-| 包 | 取号方式 | 号段续租 | 适合场景 |
+| 包 | 取号方式 | 续租方式 | 适用场景 |
 | --- | --- | --- | --- |
-| [`actor`](./actor) | 环形队列内原子 CAS 取号 | 唯一后台 `ext.Actor` 回填 | 关注调用方延迟、希望号段无缝切换 |
-| [`mutex`](./mutex) | 当前号段内原子 CAS 取号 | 号段耗尽时互斥锁同步续租 | 关注实现简单、实例数量较多或负载较低 |
+| [`actor`](./actor) | 从 4096-ID 环形缓存原子取号 | 后台 `ext.Actor` 回填 | 关注调用延迟，生成器长期存活 |
+| [`mutex`](./mutex) | 从当前 64-ID 号段原子取号 | 号段耗尽时互斥锁同步续租 | 关注实现简单、实例较多或负载较低 |
 
-两个包拥有各自独立的状态、错误、解析和测试，不会相互调用。
+两个包都支持：
 
-## 重要约束
+- 非负 63 位 `int64` ID；
+- 默认 Snowflake 布局；
+- 自定义字段位数；Actor 序列固定为 12 位，Mutex 序列可配置；
+- 取号时动态传入业务 ID；
+- 单个取号与固定 64-ID 批量取号；
+- 使用生成器自身配置解析 ID；
+- 多 goroutine 并发共享。
 
-- `machineID` 的有效范围是 `0~1023`。
-- 同一时刻，每个生成器必须使用全局独占的 `machineID`。Actor 与 Mutex 混用时也不能重复。
-- 构造生成器和解析 ID 必须传入同一个自定义纪元 `time.Time`。
-- 自定义纪元按 `UnixMilli()` 截断到毫秒，不能晚于当前时间。
-- 当前时间与纪元之间的跨度不能超过 41 位毫秒范围，约 69.7 年。
-- 单个 `machineID` 每毫秒最多生成 4096 个 ID，即格式上限约为 409.6 万 ID/秒。
-- 并发调用保证唯一，但不保证按照 goroutine 完成顺序全局单调递增。
+## 安装
 
-## ID 布局
+项目要求 Go 1.27 或更高版本。
 
-生成的 ID 使用 63 位非负 `int64`：
+```bash
+go get github.com/da123wda/snowflake-id/v2/actor
+go get github.com/da123wda/snowflake-id/v2/mutex
+```
+
+只需安装实际使用的包。
+
+## 默认布局
+
+`NewActor` 和 `NewMutex` 使用相同的默认布局：
 
 ```text
  62                    22 21          12 11             0
@@ -31,101 +40,22 @@
           41 bit             10 bit          12 bit
 ```
 
-编码公式：
-
 ```text
 ID = ((unixMilliseconds - epoch.UnixMilli()) << 22)
    | (machineID << 12)
    | sequence
 ```
 
-| 字段 | 位数 | 范围 |
+| 字段 | 位数 | 容量 |
 | --- | ---: | ---: |
-| 纪元后的毫秒差 | 41 | `0 ~ 2^41-1` |
-| 机器 ID | 10 | `0 ~ 1023` |
-| 毫秒内序列号 | 12 | `0 ~ 4095` |
+| 时间戳差值 | 41 | 约 69.7 年 |
+| 机器 ID | 10 | 1024 台，取值 `0~1023` |
+| 业务 ID | 0 | 只能为 `0` |
+| 毫秒内序列 | 12 | 4096 ID/ms |
 
-## 安装
+## 快速开始
 
-项目要求 Go 1.27 或更高版本。
-
-只使用 Actor：
-
-```bash
-go get github.com/da123wda/snowflake-id/actor
-```
-
-只使用 Mutex：
-
-```bash
-go get github.com/da123wda/snowflake-id/mutex
-```
-
-## Actor 使用示例
-
-Actor 版在初始化时预留 64 个号段，每段 64 个 ID，总缓存容量为 4096 个 ID。每个生成器实例只创建一个 Actor，邮箱容量固定为 64。
-
-```go
-package main
-
-import (
-	"errors"
-	"fmt"
-	"log"
-	"runtime"
-	"time"
-
-	actorid "github.com/da123wda/snowflake-id/actor"
-)
-
-var epoch = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-
-func nextID(generator *actorid.ActorGenerator) (int64, error) {
-	for {
-		value, err := generator.Next()
-		if errors.Is(err, actorid.ErrLeaseUnavailable) {
-			// 后台 Actor 尚未填好下一槽，稍后重试。
-			runtime.Gosched()
-			continue
-		}
-		return value, err
-	}
-}
-
-func main() {
-	// machineID=42 必须在所有同时运行的生成器中保持全局独占。
-	generator, err := actorid.NewActor(42, epoch)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	value, err := nextID(generator)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	parsed, err := actorid.Parse(value, epoch)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Printf(
-		"id=%d time=%s machine=%d sequence=%d\n",
-		value,
-		parsed.V0.UTC().Format(time.RFC3339Nano),
-		parsed.V1,
-		parsed.V2,
-	)
-}
-```
-
-`ErrLeaseUnavailable` 是 Actor 包的临时错误：当所有预填充号段都已耗尽，而 Actor 尚未发布下一号段时，`Next` 在内部让出调度权重试 10 次，随后返回该错误。调用方可以只对这个错误重试；`ErrInvalidTimestamp` 等其他错误应直接处理。
-
-`ActorGenerator` 不提供关闭 Actor 的 API，适合作为服务进程中的长生命周期实例。创建多个 ID 生成器没有问题，每个实例各自拥有且仅拥有一个 Actor。
-
-## Mutex 使用示例
-
-Mutex 版不创建 Actor。`Next` 通常从当前 64-ID 号段原子取号，只有首次取号或当前号段耗尽时才加锁续租。
+### Mutex
 
 ```go
 package main
@@ -135,13 +65,12 @@ import (
 	"log"
 	"time"
 
-	mutexid "github.com/da123wda/snowflake-id/mutex"
+	mutexid "github.com/da123wda/snowflake-id/v2/mutex"
 )
 
 func main() {
 	epoch := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-
-	generator, err := mutexid.NewMutex(43, epoch)
+	generator, err := mutexid.NewMutex(42, epoch)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -151,262 +80,316 @@ func main() {
 		log.Fatal(err)
 	}
 
-	parsed, err := mutexid.Parse(value, epoch)
+	parsed, err := generator.Parse(value)
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	fmt.Printf("id=%d machine=%d sequence=%d\n", value, parsed.V1, parsed.V2)
+	fmt.Println(value, parsed.V0, parsed.V1, parsed.V2, parsed.V3)
 }
 ```
 
-Mutex 版没有 `ErrLeaseUnavailable`：号段耗尽时，负责续租的调用者会同步完成预留或返回具体错误。
+### Actor
+
+Actor 的后台回填可能暂时跟不上消费速度，此时 `Next` 返回可重试的 `ErrLeaseUnavailable`：
+
+```go
+func nextActor(generator *actorid.ActorGenerator) (int64, error) {
+	for {
+		value, err := generator.Next()
+		if errors.Is(err, actorid.ErrLeaseUnavailable) {
+			runtime.Gosched()
+			continue
+		}
+		return value, err
+	}
+}
+```
+
+创建方式与 Mutex 相同：
+
+```go
+generator, err := actorid.NewActor(42, epoch)
+value, err := nextActor(generator)
+parsed, err := generator.Parse(value)
+```
+
+`ActorGenerator` 面向服务进程中的长生命周期实例，目前不提供关闭后台 Actor 的公开方法。
+
+## 自定义位布局
+
+ID 从高位到低位统一为：
+
+```text
+| timestamp | machine ID | business ID | sequence |
+```
+
+### Actor：序列固定为 12 位
+
+Actor 只允许配置时间戳、机器和业务位数：
+
+```go
+generator, err := actorid.NewActorWithBits(
+	40, // timestampBits
+	7,  // machineIDBits
+	4,  // businessBits
+	12, // machineID
+	epoch,
+)
+```
+
+约束：
+
+```text
+timestampBits >= 1
+timestampBits + machineIDBits + businessBits = 51
+sequenceBits = 12
+```
+
+Actor 始终保留完整的 4096-ID 序列空间和 `64 × 64` 环形缓存。
+
+### Mutex：四段均可配置
+
+```go
+generator, err := mutexid.NewMutexWithBits(
+	40, // timestampBits
+	9,  // machineIDBits
+	4,  // businessBits
+	10, // sequenceBits
+	12, // machineID
+	epoch,
+)
+```
+
+约束：
+
+```text
+timestampBits >= 1
+sequenceBits >= 6
+timestampBits + machineIDBits + businessBits + sequenceBits = 63
+```
+
+序列至少为 6 位，是因为 `NextBatch` 必须返回 64 个属于同一毫秒的 ID。机器位或业务位可以是 0；对应位数为 0 时，字段值只能是 0。
+
+### 容量计算
+
+| 字段 | 容量 |
+| --- | ---: |
+| 时间范围 | `(2^timestampBits - 1)` 毫秒 |
+| 机器数量 | `2^machineIDBits` |
+| 业务数量 | `2^businessBits` |
+| 每台机器每毫秒总容量 | `2^sequenceBits` |
+
+例如 `40/7/4/12` 表示约 34.8 年、128 台机器、16 个业务、每台机器总计 4096 ID/ms。
+
+## 动态业务 ID
+
+业务 ID 不在创建生成器时绑定，而是在每次取号时传入：
+
+```go
+value, err := generator.NextWithBusinessID(3)
+batch, err := generator.NextBatchWithBusinessID(3)
+```
+
+需要注意：
+
+- `businessID` 必须在 `0~2^businessBits-1` 范围内；
+- `Next()` 和 `NextBatch()` 等价于业务 ID 为 0；
+- 同一生成器的所有业务共享时间戳和序列状态，不会因业务数量增加总吞吐；
+- 业务位高于序列位，连续调用使用不同业务 ID 时，ID 数值不保证单调递增；
+- `machineID` 必须在所有同时运行的生成器之间保持全局唯一，不能只依赖业务 ID 隔离。
 
 ## 批量取号
 
-两个包都提供相同形式的 `NextBatch`：
+两个生成器都支持：
 
 ```go
 batch, err := generator.NextBatch()
-if err != nil {
-	return err
-}
-
-fmt.Println(len(batch))       // 64
-fmt.Println(batch[0])         // 第一个 ID
-fmt.Println(batch[len(batch)-1])
+batch, err := generator.NextBatchWithBusinessID(3)
 ```
 
-`NextBatch()` 返回 `ext.Vec[int64]`，其行为如下：
+批量接口的契约：
 
 - 固定返回 64 个 ID；
-- 批内 ID 属于同一个毫秒、同一个 `machineID`；
+- 批内时间戳、机器 ID 和业务 ID 相同；
 - 批内严格递增，相邻 ID 相差 1；
-- 可以和 `Next()` 并发调用且不会重复；
-- 与其他批次或 `Next()` 按完成顺序观察时，不保证全局单调；
+- 可以与单个取号并发调用且不会重复；
 - 每批创建一个 64 元素切片，即 512 B、1 次分配。
 
 ## 解析 ID
 
-Actor 与 Mutex 各自提供 `Parse`，调用时必须使用生成 ID 时的纪元：
+推荐使用生成器方法解析：
 
 ```go
-parsed, err := actorid.Parse(value, epoch)
-// 或：mutexid.Parse(value, epoch)
+parsed, err := generator.Parse(value)
 ```
 
-返回类型为 `ext.T3[time.Time, int64, int64]`：
+生成器会自动使用自身保存的位布局和纪元，返回 `ext.T4[time.Time, int64, int64, int64]`：
 
 | 字段 | 含义 |
 | --- | --- |
 | `V0` | 号段预留时间 |
 | `V1` | 机器 ID |
-| `V2` | 毫秒内序列号 |
+| `V2` | 业务 ID |
+| `V3` | 毫秒内序列号 |
 
-ID 中不会保存纪元本身，因此传错纪元会得到错误的时间。这属于调用方配置契约；机器 ID 和序列号不受纪元影响。
+两个包仍保留包级 `Parse(value, epoch)`，用于解析默认 `41/10/0/12` 布局。它返回 `ext.T3`，依次为时间、机器 ID 和序列号。
 
-解析出的时间表示号段预留时刻，不一定等于 `Next()` 的实际调用时刻。Actor 版会预填充 4096 个 ID：以 5 万 ID/秒消费时，队尾 ID 的时间戳可能比实际取号时间早约 81.92 ms；长时间空闲后可能更早。
+ID 本身不保存布局或纪元。相同 ID 命名空间必须统一使用一套位布局；使用错误的生成器或纪元解析会得到错误字段。
 
-## 并发使用
+Actor 会提前预留 ID，因此解析时间表示号段预留时间，不一定等于实际取号时间。以 5 万 ID/s 消费完整 4096-ID 缓存时，队尾时间最多可能比取号时刻早约 81.92 ms。
 
-`ActorGenerator` 和 `MutexGenerator` 都可以被多个 goroutine 并发共享：
+## 并发、唯一性与时钟
 
-```go
-var wg sync.WaitGroup
+- `ActorGenerator` 和 `MutexGenerator` 都可以被多个 goroutine 共享；
+- 唯一性由机器 ID、时间戳和生成器内共享序列共同保证；
+- 并发调用不保证按照 goroutine 完成顺序全局单调；
+- 自定义纪元按 `UnixMilli()` 截断，不能晚于当前时间；
+- 当前时间超出配置的时间戳范围时返回 `ErrInvalidTimestamp`；
+- 检测到时钟回拨时停止预留新号段并返回 `ErrInvalidTimestamp`；
+- 已预留的 Actor 缓存或 Mutex 当前号段仍可能在下一次续租检测前继续消费。
 
-for range 100 {
-	wg.Go(func() {
-		value, err := generator.Next()
-		if err != nil {
-			log.Printf("generate ID: %v", err)
-			return
-		}
-		consume(value)
-	})
-}
+序列不足时，生成器等待下一毫秒。距离边界较远时先休眠，接近边界后使用 `runtime.Gosched()`；这避免持续忙等，但实际吞吐会受操作系统调度精度影响。
 
-wg.Wait()
-```
+## Actor 与 Mutex 的实现差异
 
-唯一性由内部原子取号和号段预留保证。若业务要求严格按照调用完成顺序递增，必须在业务层串行化。
-
-## API 参考
-
-### actor 包
-
-```go
-func NewActor(machineID int64, epoch time.Time) (*ActorGenerator, error)
-func (g *ActorGenerator) Next() (int64, error)
-func (g *ActorGenerator) NextBatch() (ext.Vec[int64], error)
-func Parse(value int64, epoch time.Time) (ext.T3[time.Time, int64, int64], error)
-```
-
-### mutex 包
-
-```go
-func NewMutex(machineID int64, epoch time.Time) (*MutexGenerator, error)
-func (g *MutexGenerator) Next() (int64, error)
-func (g *MutexGenerator) NextBatch() (ext.Vec[int64], error)
-func Parse(value int64, epoch time.Time) (ext.T3[time.Time, int64, int64], error)
-```
-
-### 公开常量
-
-两个包分别公开相同数值的布局常量：
-
-| 常量 | 值 | 含义 |
-| --- | ---: | --- |
-| `MachineIDBits` | 10 | 机器 ID 位数 |
-| `MaxMachineID` | 1023 | 最大机器 ID |
-| `IDsPerMillisecond` | 4096 | 单机器每毫秒序列容量 |
-| `MaxTimestampDeltaMilliseconds` | `2^41-1` | 纪元后最大毫秒差 |
-
-### 错误
-
-| 错误 | Actor | Mutex | 含义 |
-| --- | :---: | :---: | --- |
-| `ErrInvalidMachineID` | ✓ | ✓ | `machineID` 不在 `0~1023` |
-| `ErrInvalidTimestamp` | ✓ | ✓ | 纪元无效、时钟回拨或超过 41 位时间范围 |
-| `ErrInvalidID` | ✓ | ✓ | 解析负数 ID |
-| `ErrLeaseUnavailable` | ✓ | — | Actor 队列暂时没有可消费号段，可重试 |
-
-## 实现方式
-
-### Actor：固定环形队列 + 唯一回填 Actor
-
-Actor 生成器持有 64 个固定槽位，每个槽位是一个 64-ID 号段：
+### Actor
 
 ```text
 64 slots × 64 IDs = 4096 buffered IDs
 ```
 
-核心流程：
+- `lease.next.CompareAndSwap` 负责号段内取号；
+- `active.CompareAndSwap` 负责切换环形槽位；
+- 后台唯一 Actor 回填已耗尽槽位；
+- `Next` 的正常取号和槽位切换不使用互斥锁；
+- 回填暂未发布时可能返回 `ErrLeaseUnavailable`。
+
+### Mutex
 
 ```text
-读取 active generation
-→ 从 generation % 64 对应号段 CAS 取号
-→ 号段有值：立即返回
-→ 号段耗尽：检查下一 generation
-→ CAS 切换 active
-→ CAS 赢家把旧槽位提交给唯一 Actor
-→ Actor 在后台预留新号段并原子发布到旧槽位
+读取当前号段
+→ CAS 取号
+→ 号段耗尽时加锁
+→ 同步预留并发布新的 64-ID 号段
 ```
 
-实现要点：
+- 当前号段有值时不进入互斥锁；
+- 续租由触发耗尽的调用者同步完成；
+- 不会返回 `ErrLeaseUnavailable`。
 
-1. `lease.next.CompareAndSwap` 是逐 ID 取号的线性化点；
-2. `active.CompareAndSwap` 保证并发耗尽时只有一个调用者切换 generation；
-3. generation 单调递增，索引使用 `generation % 64`，避免环形复用的 ABA 问题；
-4. 每个槽位使用 `refilling` 原子状态，最多只有一个在途回填；
-5. 每个槽位的 Actor 函数在初始化时创建并复用，调用路径不创建临时闭包；
-6. Actor 邮箱固定为 64，和槽位数量一致；
-7. `Next()` 的逐 ID 取号和槽位切换不使用互斥锁；
-8. Actor 回填与 `NextBatch()` 共享同一个状态锁，保证预留区间不重叠。
+## API
 
-### Mutex：原子取号 + 耗尽时加锁续租
+### actor
 
-Mutex 版只保存一个当前号段：
+```go
+func NewActor(machineID int64, epoch time.Time) (*ActorGenerator, error)
+func NewActorWithBits(timestampBits, machineIDBits, businessBits uint8, machineID int64, epoch time.Time) (*ActorGenerator, error)
+
+func (g *ActorGenerator) Next() (int64, error)
+func (g *ActorGenerator) NextWithBusinessID(businessID int64) (int64, error)
+func (g *ActorGenerator) NextBatch() (ext.Vec[int64], error)
+func (g *ActorGenerator) NextBatchWithBusinessID(businessID int64) (ext.Vec[int64], error)
+func (g *ActorGenerator) Parse(value int64) (ext.T4[time.Time, int64, int64, int64], error)
+
+func Parse(value int64, epoch time.Time) (ext.T3[time.Time, int64, int64], error)
+```
+
+### mutex
+
+```go
+func NewMutex(machineID int64, epoch time.Time) (*MutexGenerator, error)
+func NewMutexWithBits(timestampBits, machineIDBits, businessBits, sequenceBits uint8, machineID int64, epoch time.Time) (*MutexGenerator, error)
+
+func (g *MutexGenerator) Next() (int64, error)
+func (g *MutexGenerator) NextWithBusinessID(businessID int64) (int64, error)
+func (g *MutexGenerator) NextBatch() (ext.Vec[int64], error)
+func (g *MutexGenerator) NextBatchWithBusinessID(businessID int64) (ext.Vec[int64], error)
+func (g *MutexGenerator) Parse(value int64) (ext.T4[time.Time, int64, int64, int64], error)
+
+func Parse(value int64, epoch time.Time) (ext.T3[time.Time, int64, int64], error)
+```
+
+### 默认布局常量
+
+| 常量 | 值 |
+| --- | ---: |
+| `TimestampBits` | 41 |
+| `MachineIDBits` | 10 |
+| `BusinessIDBits` | 0 |
+| `SequenceBits` | 12 |
+| `MaxMachineID` | 1023 |
+| `MaxBusinessID` | 0 |
+| `IDsPerMillisecond` | 4096 |
+| `MaxTimestampDeltaMilliseconds` | `2^41-1` |
+
+### 错误
+
+| 错误 | Actor | Mutex | 含义 |
+| --- | :---: | :---: | --- |
+| `ErrInvalidBitLayout` | ✓ | ✓ | 自定义位数不满足布局约束 |
+| `ErrInvalidMachineID` | ✓ | ✓ | 机器 ID 超出配置范围 |
+| `ErrInvalidBusinessID` | ✓ | ✓ | 业务 ID 超出配置范围 |
+| `ErrInvalidTimestamp` | ✓ | ✓ | 纪元、时间范围或时钟回拨无效 |
+| `ErrInvalidID` | ✓ | ✓ | 解析负数 ID |
+| `ErrLeaseUnavailable` | ✓ | — | Actor 缓存暂时不可用，可重试 |
+
+## 性能
+
+12 位序列的理论持续吞吐上限是：
 
 ```text
-读取 current lease
-→ CAS 取号成功：立即返回
-→ current 不存在或耗尽：获取互斥锁
-→ 锁内再次比较 current，避免重复续租
-→ 预留新的 64-ID 号段
-→ 原子发布为 current
+4096 ID/ms = 4,096,000 ID/s
+1 second / 4,096,000 ≈ 244.14 ns/ID
 ```
 
-互斥锁不会进入有可用号段的热路径。`NextBatch()` 使用同一把锁直接预留新的 64-ID 区间，因此可以与 `Next()` 并发混用。
+测试环境：AMD Ryzen 7 4800H、Windows/amd64、`GOMAXPROCS=16`。每项运行 1 秒、重复 5 次取中位数：
 
-### 时间、序列和回拨处理
-
-两个包的状态逻辑相同，但代码完全独立：
-
-- 当前毫秒仍有空间时，从下一个序列号开始预留；
-- 当前毫秒不足以容纳完整号段时，整个号段移动到下一毫秒；
-- 距离下一毫秒超过 200 µs 时先休眠，接近边界后使用 `runtime.Gosched()`；
-- 当前时间小于最后预留时间时返回 `ErrInvalidTimestamp`；
-- Actor 已缓存的号段、Mutex 当前尚未耗尽的号段仍可继续消费，因此回拨在下一次预留时被发现。
-
-## 性能测试结果
-
-测试环境：
-
-| 项目 | 值 |
-| --- | --- |
-| CPU | AMD Ryzen 7 4800H，8 核 16 线程 |
-| OS/架构 | Windows / amd64 |
-| Go | 1.27.0 |
-| `GOMAXPROCS` | 16 |
-| 采样 | 每项 1 秒，重复 5 次取中位数 |
-
-### `Next()`
-
-| 场景 | Actor | Mutex | 分配说明 |
-| --- | ---: | ---: | --- |
-| 当前号段缓存命中 | 5.37 ns/ID | 5.32 ns/ID | 两者调用路径均为 0 分配 |
-| 1000-ID 短批，包含号段切换 | 5.98 ns/ID | 7.40 ns/ID | Actor 调用路径 0 分配；Mutex 每 1000 ID 为 384 B、16 allocs |
-| 并行持续生成 | 244.0 ns/ID | 244.0 ns/ID | 均达到格式上限约 409.6 万 ID/秒 |
-
-说明：Actor 的号段对象由后台回填创建；“调用路径 0 分配”不表示整个进程永远不分配。Mutex 的号段创建发生在负责同步续租的调用方。
-
-### `NextBatch()`
-
-| 场景 | Actor | Mutex | 分配 |
+| 公开 API | 中位数 | 实测吞吐 | 分配 |
 | --- | ---: | ---: | ---: |
-| 单批 64 ID | 1.389 µs/批，21.70 ns/ID | 1.408 µs/批，21.99 ns/ID | 512 B、1 alloc/批 |
-| 并行持续生成 | 244.2 ns/ID | 244.0 ns/ID | 512 B、1 alloc/批 |
+| Actor `Next()` | 248.0 ns/ID | 约 403.2 万 ID/s | 0 B/op |
+| Actor `NextWithBusinessID()` | 248.7 ns/ID | 约 402.1 万 ID/s | 0 B/op |
+| Mutex `Next()` | 247.9 ns/ID | 约 403.4 万 ID/s | 0 B/op |
+| Mutex `NextWithBusinessID()` | 245.6 ns/ID | 约 407.2 万 ID/s | 0 B/op |
 
-### 如何理解 244 ns/ID
+这些是包含毫秒翻页等待的持续吞吐结果。理论上限假设每个毫秒边界都能精确唤醒；实际值会受到 Windows 调度、`Gosched`、号段续租和并发竞争影响。业务 ID 路径与默认路径的细小差异属于测量噪声。
 
-12 位序列号决定每个机器 ID 每毫秒最多生成 4096 个 ID：
+## 测试与基准
+
+所有测试位于各实现自己的 `test` 子包：
 
 ```text
-1 second / 4,096,000 IDs ≈ 244.14 ns/ID
+actor/test/
+mutex/test/
 ```
 
-因此持续基准中的约 244 ns/ID 是格式上限，不代表 CPU 取一个 ID 需要 244 ns。排除等待下一毫秒后，实际调用成本约为 5~7 ns/ID。
-
-在 5 万 ID/秒的目标负载下，两种实现都远低于格式上限。
-
-## 测试与验证
-
-运行全部测试：
+运行全部测试和静态检查：
 
 ```bash
 go test ./...
-```
-
-运行静态检查：
-
-```bash
 go vet ./...
 ```
 
-Actor 代表性基准：
+运行四种 4096 ID/ms 公开 API 基准：
 
 ```bash
-go test ./actor -run "^$" \
-  -bench "BenchmarkActor(NextCachedHotPath|NextShortBatch|NextSustained|NextBatchSingleCost|NextBatchParallelSustained)$" \
+go test ./actor/test ./mutex/test \
+  -run "^$" \
+  -bench "4096PerMillisecond$" \
   -benchmem -benchtime=1s -count=5
 ```
 
-当前测试覆盖：
-
-- 自定义纪元及毫秒截断；
-- 机器 ID、时间戳和最大 `int64` 边界；
-- 时钟回拨及跨毫秒等待；
-- 并发取号唯一性；
-- Actor 环形切换、断供重试和失败恢复；
-- `Next()` 与 `NextBatch()` 并发混用；
-- Actor 与 Mutex 独立包兼容性。
+测试覆盖默认与自定义布局、动态业务 ID、字段校验、解析、并发唯一性、单个与批量取号不重叠，以及持续吞吐。
 
 ## 项目结构
 
 ```text
 snowflake-id/
-├── actor/   # 环形队列 + 唯一 ext.Actor
-├── mutex/   # 原子取号 + 耗尽互斥锁续租
+├── actor/
+│   ├── test/     # Actor 公开 API 与性能测试
+│   └── *.go
+├── mutex/
+│   ├── test/     # Mutex 公开 API 与性能测试
+│   └── *.go
 ├── go.mod
 └── README.md
 ```

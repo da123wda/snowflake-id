@@ -1,4 +1,6 @@
-// Package mutex 提供基于互斥锁续租的独立 Snowflake ID 生成器。
+// Package mutex 提供可自定义时间戳、机器、业务和序列位数的 Snowflake ID 生成器。
+// 默认布局是 41 位时间戳、10 位机器 ID、0 位业务 ID 和 12 位序列号。
+// businessID 在取号时指定，同一生成器的所有业务共享序列空间。
 // 调用方在构造生成器和解析 ID 时提供同一个自定义纪元。
 // Next 从当前 64-ID 号段原子取号，仅在号段不存在或耗尽时加锁续租。
 package mutex

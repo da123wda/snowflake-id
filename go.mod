@@ -1,4 +1,4 @@
-module github.com/da123wda/snowflake-id
+module github.com/da123wda/snowflake-id/v2
 
 go 1.27
 

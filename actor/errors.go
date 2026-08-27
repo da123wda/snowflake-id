@@ -3,8 +3,14 @@ package actor
 import "errors"
 
 var (
-	// ErrInvalidMachineID 表示机器 ID 超出 [0, MaxMachineID] 范围。
-	ErrInvalidMachineID = errors.New("snowflake-id/actor: machine ID must be between 0 and 1023")
+	// ErrInvalidBitLayout 表示自定义位数不满足 Actor 的 63 位布局约束。
+	ErrInvalidBitLayout = errors.New("snowflake-id/actor: timestamp, machine and business bits must total 51")
+
+	// ErrInvalidMachineID 表示机器 ID 超出默认或自定义机器位可编码的范围。
+	ErrInvalidMachineID = errors.New("snowflake-id/actor: machine ID exceeds configured bit width")
+
+	// ErrInvalidBusinessID 表示业务 ID 超出自定义业务位可编码的范围。
+	ErrInvalidBusinessID = errors.New("snowflake-id/actor: business ID exceeds configured bit width")
 
 	// ErrInvalidTimestamp 表示时间戳发生回拨或超出支持范围。
 	ErrInvalidTimestamp = errors.New("snowflake-id/actor: invalid timestamp")
